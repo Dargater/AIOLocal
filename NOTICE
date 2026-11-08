@@ -1,0 +1,66 @@
+# AIO Local — third-party notices
+
+AIO Local itself is licensed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later). See `LICENSE`.
+
+This file lists the third-party components the application talks to or redistributes, and the
+obligations that matter for distribution. It is informative, not legal advice; run a licence review
+before any public release.
+
+## Not bundled (installed by the user)
+
+| Component | Licence | Notes |
+|---|---|---|
+| OpenVINO Model Server (OVMS) | Apache-2.0 | separate process; downloaded by the user |
+| OpenVINO runtime | Apache-2.0 | via OVMS |
+| OpenCode | MIT (verify the pinned release) | separate process; lifecycle managed by `aiolocal/code.py` |
+| REA (`rea-agents`) | MIT | separate process; MCP stdio client in `aiolocal/reverse.py` |
+| Node.js | MIT | portable copy installed under `data/tools/node`; used by REA/npx |
+| Python 3.12 (private) | PSF-2.0 | portable copy installed under `data/tools/python`; runs the GIMP plugin |
+| Docling | MIT | optional PDF conversion; `aiolocal/knowledge.py` |
+| GIMP | GPL-3.0 | separate process; native dock in `aiolocal/gimp.py` |
+| OpenVINO AI plugins for GIMP | Apache-2.0 (verify) | separate process |
+
+## Models (downloaded by the user, not distributed here)
+
+| Model | Licence | Obligation |
+|---|---|---|
+| `OpenVINO/Qwen3.5-9B-int4-ov` | Apache-2.0 | attribution |
+| `OpenVINO/Qwen3-Embedding-0.6B-int8-ov` | Apache-2.0 | attribution |
+| `OpenVINO/LFM2.5-1.2B-Instruct-int4-cw-ov` | check upstream | not bundled |
+| `OpenVINO/stable-diffusion-v1-5-int8-ov` | CreativeML OpenRAIL-M | **use restrictions pass through**; show them before first generation |
+| `OpenVINO/dreamshaper-8-inpainting-int8-ov` | CreativeML OpenRAIL-M | inpainting/editing; use restrictions pass through |
+| `OpenVINO/Qwen3-VL-4B-Instruct-int4-ov` | Apache-2.0 | vision chat; attribution |
+| Whisper | MIT | not bundled (v2) |
+| Kokoro | Apache-2.0 | not bundled (v2) |
+| LTX-Video | check upstream before v2 | not bundled |
+
+## Python dependencies
+
+| Package | Licence |
+|---|---|
+| FastAPI | MIT |
+| Uvicorn | BSD-3-Clause |
+| HTTPX | BSD-3-Clause |
+| NumPy | BSD-3-Clause |
+| pypdf | BSD-3-Clause |
+| pytest (dev only) | MIT |
+| PyInstaller (build only) | GPL-2.0-with-exception |
+
+PyInstaller's exception permits bundling proprietary or differently licensed applications; it does
+not affect AIO Local's AGPL licensing.
+
+## Bundled UI assets
+
+| Component | Licence | Notes |
+|---|---|---|
+| KaTeX 0.16.11 | MIT | vendored under `aiolocal/web/vendor/katex`; renders math offline, includes its own fonts |
+
+The UI uses no other third-party fonts or icon packs. All remaining CSS and SVG are original to
+this repository.
+
+## AGPL note
+
+AIO Local communicates with OVMS, OpenCode, REA, Docling and GIMP over loopback HTTP, stdio or
+Win32 window handles. They remain separate works. If you modify AIO Local and distribute it, the
+AGPL requires you to offer the corresponding source under the same licence.

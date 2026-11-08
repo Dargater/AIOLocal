@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiolocal"
+version = "0.1.0"
+description = "Local, memory-first AI workspace for Intel hardware (OpenVINO / OVMS)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "AIO Local contributors" }]
+keywords = ["openvino", "ovms", "local-ai", "memory", "intel"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "httpx>=0.27,<1",
+  "numpy>=1.26,<3",
+  "huggingface-hub>=0.27,<2",
+  "pypdf>=5,<8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pyinstaller>=6.11,<7"]
+
+[project.scripts]
+aiolocal = "aiolocal.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["aiolocal*"]
+
+[tool.setuptools.package-data]
+aiolocal = ["web/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

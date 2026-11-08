@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="aio-token" content="__AIO_TOKEN__">
+  <meta name="color-scheme" content="dark">
+  <title>AIO Local</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/static/styles.css?v=__AIO_ASSET_VERSION__">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">AI</div>
+      <div>
+        <div class="brand-name">AIO Local</div>
+        <div class="brand-sub">private · on-device</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="chat"><span class="nav-ico">◈</span> Chat</button>
+      <button class="nav-item" data-view="images"><span class="nav-ico">▧</span> Images</button>
+      <button class="nav-item" data-view="memory"><span class="nav-ico">◍</span> Memory</button>
+      <button class="nav-item" data-view="models"><span class="nav-ico">▤</span> Models</button>
+    </nav>
+
+    <div class="nav-section">Workspace</div>
+    <nav class="nav">
+      <button class="nav-item" data-view="documents"><span class="nav-ico">▦</span> Documents</button>
+      <button class="nav-item" data-view="code"><span class="nav-ico">⌘</span> Code</button>
+      <button class="nav-item" data-view="re"><span class="nav-ico">◎</span> Reverse engineering</button>
+      <button class="nav-item" data-view="gimp"><span class="nav-ico">✦</span> GIMP dock</button>
+    </nav>
+
+    <div class="nav-section">Planned modules</div>
+    <nav class="nav planned">
+      <button class="nav-item" data-view="media"><span class="nav-ico">▶</span> Audio &amp; video</button>
+    </nav>
+
+    <div class="nav-section">System</div>
+    <nav class="nav">
+      <button class="nav-item" data-view="setup"><span class="nav-ico">▣</span> Setup</button>
+      <button class="nav-item" data-view="settings"><span class="nav-ico">⚙</span> Settings</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="upstream-pill" class="pill offline"><span class="dot"></span> checking</div>
+      <div class="muted small">Everything stays on this PC.</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="view-title">Chat</h1>
+        <p id="view-sub" class="muted">Memory-first conversation with your local model.</p>
+      </div>
+      <div class="topbar-right">
+        <span id="setup-pill" class="pill warn hidden">setup</span>
+        <span id="model-pill" class="pill">no model</span>
+        <span id="mem-pill" class="pill">memory off</span>
+      </div>
+    </header>
+
+    <!-- CHAT -->
+    <section id="view-chat" class="view active">
+      <div class="chat-shell">
+        <div class="chat-toolbar">
+          <select id="conversation-select" aria-label="Conversation"></select>
+          <button id="new-chat" class="btn ghost" type="button">+ New chat</button>
+          <span class="grow"></span>
+          <span id="chat-status" class="muted small"></span>
+        </div>
+
+        <div id="messages" class="messages" aria-live="polite">
+          <div class="empty-state" id="chat-empty">
+            <div class="empty-mark">◈</div>
+            <h2>Start with anything</h2>
+            <p>This assistant remembers across chats, on this machine only. Ask a question, paste code, or plan a project.</p>
+            <div class="suggestions">
+              <button class="chip" data-suggest="Summarise what you know about this project so far.">What do you remember?</button>
+              <button class="chip" data-suggest="Help me plan a small Python tool, step by step.">Plan a small project</button>
+              <button class="chip" data-suggest="Explain how the memory system in this app works.">How does memory work?</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="composer" class="composer">
+          <div id="chat-attachment" class="attachment hidden">
+            <img id="chat-attachment-preview" alt="Attached image preview">
+            <div class="attachment-meta">
+              <strong id="chat-attachment-name">image</strong>
+              <span class="muted small">Sent to a vision model for this message only. Never added to memory.</span>
+            </div>
+            <button type="button" id="chat-attachment-remove" class="btn ghost small">Remove</button>
+          </div>
+          <textarea id="prompt" rows="3" placeholder="Message your local model…" autocomplete="off"></textarea>
+          <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden">
+          <div class="composer-row">
+            <button type="button" id="chat-attach" class="btn ghost small" title="Attach an image for a vision model">Attach image</button>
+            <span class="hint">Enter to send · Shift+Enter for a new line</span>
+            <span class="grow"></span>
+            <button type="button" id="stop" class="btn ghost hidden">Stop</button>
+            <button type="submit" id="send" class="btn primary">Send</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- IMAGES -->
+    <section id="view-images" class="view">
+      <div class="grid two">
+        <div class="card">
+          <h2>Generate</h2>
+          <p class="muted">Requires an image model loaded in OVMS. SD 1.5 weights are CreativeML OpenRAIL-M.</p>
+          <label>Prompt<textarea id="img-prompt" rows="3" placeholder="A quiet workshop at dusk, warm light, detailed"></textarea></label>
+          <label>Negative prompt<input id="img-negative" type="text" placeholder="blurry, text, watermark"></label>
+          <div class="row">
+            <label>Width<input id="img-width" type="number" value="512" min="64" max="1024" step="64"></label>
+            <label>Height<input id="img-height" type="number" value="512" min="64" max="1024" step="64"></label>
+            <label>Steps<input id="img-steps" type="number" value="20" min="1" max="60"></label>
+          </div>
+          <div class="row">
+            <label>Seed<input id="img-seed" type="number" placeholder="random"></label>
+            <label>Images<input id="img-count" type="number" value="1" min="1" max="4"></label>
+          </div>
+          <button id="img-generate" class="btn primary" type="button">Generate</button>
+          <p id="img-status" class="muted small"></p>
+        </div>
+        <div class="card">
+          <h2>Edit (inpainting)</h2>
+          <p class="muted">Select an image from the gallery, then describe the change. Requires the inpainting model.</p>
+          <div id="img-selected" class="selected-image empty">No image selected</div>
+          <label>Edit prompt<input id="img-edit-prompt" type="text" placeholder="Replace the sky with soft clouds"></label>
+          <button id="img-edit" class="btn ghost" type="button">Edit selected image</button>
+          <p id="img-edit-status" class="muted small"></p>
+        </div>
+      </div>
+
+      <div class="section-head">
+        <h2>Gallery</h2>
+        <span id="gallery-count" class="muted small"></span>
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </section>
+
+    <!-- MEMORY -->
+    <section id="view-memory" class="view">
+      <div class="stat-row">
+        <div class="stat"><span id="stat-messages">0</span><label>messages</label></div>
+        <div class="stat"><span id="stat-summaries">0</span><label>summaries</label></div>
+        <div class="stat"><span id="stat-topics">0</span><label>topics</label></div>
+        <div class="stat"><span id="stat-jobs">0</span><label>jobs pending</label></div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h2>Search memory</h2>
+          <p class="muted">This runs the same retrieval path the model uses, without calling the model.</p>
+          <div class="row">
+            <input id="mem-query" type="text" placeholder="e.g. tokio runtime decision" class="grow">
+            <button id="mem-search" class="btn primary" type="button">Search</button>
+          </div>
+          <div id="mem-results" class="results"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-head tight">
+            <h2>Summaries</h2>
+            <select id="mem-topic"><option value="">All topics</option></select>
+          </div>
+          <div id="summary-list" class="summary-list"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head tight">
+          <h2>Background jobs</h2>
+          <button id="mem-consolidate" class="btn ghost small" type="button">Run consolidation</button>
+        </div>
+        <div id="job-list" class="job-list"></div>
+      </div>
+    </section>
+
+    <!-- MODELS -->
+    <section id="view-models" class="view">
+      <div class="card ovms-card">
+        <div class="grow">
+          <h2>OVMS model server</h2>
+          <p id="ovms-detail" class="muted">Checking…</p>
+          <p id="ovms-hint" class="muted small"></p>
+        </div>
+        <div class="row wrap">
+          <button id="ovms-start" class="btn primary" type="button">Start</button>
+          <button id="ovms-stop" class="btn ghost" type="button">Stop</button>
+          <button id="ovms-reload" class="btn ghost" type="button">Reload config</button>
+          <button class="btn ghost" type="button" data-open-log="ovms">View full log</button>
+        </div>
+      </div>
+
+      <div id="ovms-progress-card" class="card progress-card hidden">
+        <div class="progress-head">
+          <span id="ovms-stage">Starting…</span>
+          <span id="ovms-elapsed" class="muted small"></span>
+        </div>
+        <div id="ovms-bar" class="progress indeterminate"><i></i></div>
+        <div id="ovms-error" class="error-box hidden"></div>
+        <details id="ovms-log-wrap" class="details hidden">
+          <summary>Server log tail</summary>
+          <pre id="ovms-log" class="json"></pre>
+        </details>
+      </div>
+
+      <div class="card setup-card">
+        <h2>Before the first start</h2>
+        <p class="muted">
+          OVMS is a separate, externally licensed server. It is <strong>required</strong> for local
+          models; it is not bundled. The app auto-detects the usual install folders and reports the
+          resolved path above.
+        </p>
+        <p class="muted small">
+          Install OpenVINO Model Server, then set <code>ovms.exe</code> in Settings. OpenVINO GenAI
+          can also run models in-process without a server, but this build does not bundle that
+          Python engine, so OVMS remains the default backend.
+        </p>
+      </div>
+
+      <p class="muted small">Models are downloaded from Hugging Face only when you press Download. Nothing is bundled with the app.</p>
+      <div id="model-list" class="model-list"></div>
+    </section>
+
+    <!-- DOCUMENTS -->
+    <section id="view-documents" class="view">
+      <div class="stat-row">
+        <div class="stat"><span id="kb-stat-collections">0</span><label>collections</label></div>
+        <div class="stat"><span id="kb-stat-documents">0</span><label>documents</label></div>
+        <div class="stat"><span id="kb-stat-chunks">0</span><label>chunks</label></div>
+        <div class="stat"><span id="kb-stat-failed">0</span><label>failed imports</label></div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h2>Add documents</h2>
+          <p class="muted">Upload a file, or put it in the inbox folder and scan. Only this folder is read.</p>
+          <label>Collection<input id="kb-collection" type="text" value="general" placeholder="general"></label>
+          <label>File<input id="kb-file" type="file"></label>
+          <div class="row wrap">
+            <button id="kb-upload" class="btn primary" type="button">Upload</button>
+            <button id="kb-scan" class="btn ghost" type="button">Scan inbox</button>
+          </div>
+          <p id="kb-status" class="muted small"></p>
+          <p class="muted small">Inbox: <code id="kb-inbox">—</code></p>
+        </div>
+
+        <div class="card">
+          <h2>Search knowledge</h2>
+          <p class="muted">Hybrid keyword + local-vector search over the knowledge DB only. Conversation memory stays separate.</p>
+          <div class="row">
+            <input id="kb-query" type="text" placeholder="e.g. optical flow constraints" class="grow">
+            <button id="kb-search" class="btn primary" type="button">Search</button>
+          </div>
+          <div id="kb-results" class="results"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head tight">
+          <h2>Documents</h2>
+          <select id="kb-filter"><option value="">All collections</option></select>
+        </div>
+        <div id="kb-doc-list" class="doc-list"></div>
+      </div>
+    </section>
+
+    <!-- CODE -->
+    <section id="view-code" class="view">
+      <div class="card module-card">
+        <div class="grow">
+          <h2>OpenCode</h2>
+          <p id="code-detail" class="muted">Checking…</p>
+          <div id="code-tags" class="model-tags"></div>
+        </div>
+        <div class="row wrap">
+          <button id="code-start" class="btn primary" type="button">Start server</button>
+          <button id="code-stop" class="btn ghost" type="button">Stop</button>
+          <button id="code-config" class="btn ghost" type="button">Write provider config</button>
+          <button class="btn ghost" type="button" data-open-log="opencode">View log</button>
+        </div>
+      </div>
+
+      <div class="card code-embed-card">
+        <div class="section-head tight">
+          <h2>Embedded OpenCode</h2>
+          <div class="row wrap">
+            <span id="code-embed-state" class="tag">not started</span>
+            <button id="code-embed-reload" class="btn ghost small" type="button">Reload UI</button>
+            <button id="code-embed-external" class="btn ghost small" type="button">Open in browser</button>
+          </div>
+        </div>
+        <div id="code-embed-empty" class="embed-empty">
+          <p id="code-embed-empty-text" class="muted">OpenCode starts automatically in its own isolated window when you open this page. Its chats, settings and caches stay under this app's data folder.</p>
+          <button id="code-embed-start" class="btn primary" type="button">Start OpenCode</button>
+        </div>
+        <iframe id="code-frame" class="code-frame hidden" title="OpenCode" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer"></iframe>
+        <p id="code-embed-note" class="muted small"></p>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h2>Workspace</h2>
+          <p class="muted">The folder OpenCode is allowed to work in. Changes still go through OpenCode's diff review.</p>
+          <label>Folder<input id="code-workspace" type="text" placeholder="C:\Projects\my-app"></label>
+          <button id="code-set-workspace" class="btn ghost" type="button">Use this folder</button>
+          <p id="code-ws-status" class="muted small"></p>
+        </div>
+        <div class="card">
+          <h2>Provider config</h2>
+          <p class="muted">OpenCode points at this app's gateway, so it uses the same local model and memory pipeline. The file contains the loopback token.</p>
+          <code id="code-config-path" class="path-code">—</code>
+          <p class="muted small">Log: <code id="code-log-path">—</code></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head tight">
+          <h2>Files</h2>
+          <button id="code-refresh" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <div class="split">
+          <div id="code-file-list" class="file-list"></div>
+          <pre id="code-file-preview" class="file-preview">Select a file to preview it.</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- REVERSE ENGINEERING -->
+    <section id="view-re" class="view">
+      <div class="card module-card">
+        <div class="grow">
+          <h2>REA over MCP</h2>
+          <p id="re-detail" class="muted">Checking…</p>
+          <div id="re-tags" class="model-tags"></div>
+        </div>
+        <div class="row wrap">
+          <button id="re-start" class="btn primary" type="button">Start REA</button>
+          <button id="re-stop" class="btn ghost" type="button">Stop</button>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <div class="section-head tight">
+            <h2>Tools</h2>
+            <button id="re-refresh" class="btn ghost small" type="button">Refresh</button>
+          </div>
+          <div id="re-tools" class="results"></div>
+        </div>
+        <div class="card">
+          <h2>Call a tool</h2>
+          <p class="muted">Tools are never invoked automatically. Every call is an explicit action with JSON arguments.</p>
+          <label>Tool<select id="re-tool"><option value="">Start REA to list tools</option></select></label>
+          <label>Arguments (JSON object)<textarea id="re-args" rows="5">{}</textarea></label>
+          <button id="re-call" class="btn primary" type="button">Call tool</button>
+          <pre id="re-result" class="json">No result yet.</pre>
+        </div>
+      </div>
+
+      <div class="card help-card">
+        <h2>How to use REA</h2>
+        <ol class="help-steps">
+          <li><strong>Start REA.</strong> The app launches its own portable Node runtime and the REA MCP package from the app tools folder. Nothing global is installed.</li>
+          <li><strong>Read the tool list.</strong> The left card shows every tool REA exposes and what it does. Tool names and argument schemas come from REA itself, so they can change between releases.</li>
+          <li><strong>Call one tool.</strong> Pick a tool, enter its arguments as a JSON object, and press <em>Call tool</em>. Start with read-only inspection tools.</li>
+          <li><strong>Work on copies.</strong> Point REA at a copy of the file or folder you are studying. Avoid running write or patch tools on original files.</li>
+        </ol>
+        <p class="muted small">Example argument shape: <code>{"path": "C:\\samples\\app.exe"}</code>. The exact keys are listed in each tool's description. Everything runs locally; results are not sent anywhere.</p>
+      </div>
+    </section>
+
+    <!-- GIMP -->
+    <section id="view-gimp" class="view">
+      <div class="card module-card">
+        <div class="grow">
+          <h2>GIMP dock</h2>
+          <p id="gimp-detail" class="muted">Checking…</p>
+          <div id="gimp-tags" class="model-tags"></div>
+        </div>
+        <div class="row wrap">
+          <button id="gimp-launch" class="btn primary" type="button">Launch GIMP</button>
+          <button id="gimp-release" class="btn ghost" type="button">Release dock</button>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h2>Open a generated image</h2>
+          <p class="muted">Pick something from the local gallery. GIMP is launched with that file only; nothing else is touched.</p>
+          <label>Image<select id="gimp-image"><option value="">No images yet</option></select></label>
+          <button id="gimp-open" class="btn ghost" type="button">Open in GIMP</button>
+        </div>
+        <div class="card">
+          <h2>How docking works</h2>
+          <p class="muted">
+            On Windows the app creates a native host window and re-parents the GIMP window into it.
+            If GIMP exposes no window within 25 seconds, it stays in its own window and the app says
+            so — closing the dock never kills GIMP or discards unsaved work.
+          </p>
+          <p class="muted small">GIMP 3 is a GTK3 app; browsers cannot host native windows, so the dock is a real Win32 window beside the app.</p>
+        </div>
+      </div>
+
+      <div class="card help-card">
+        <h2>Using the OpenVINO plugin</h2>
+        <ol class="help-steps">
+          <li><strong>Launch GIMP</strong> and open or create an image. The plugin appears under <em>Layers → OpenVINO-AI-Plugins</em>.</li>
+          <li><strong>Choose a plugin.</strong> Pick Stable Diffusion (or Super-Resolution / Semantic Segmentation), then choose a model and device and press <em>Load Models</em>. The first load can take minutes while weights are prepared.</li>
+          <li><strong>Generate or edit.</strong> Type a prompt and press <em>Generate</em>. For inpainting, make a selection, add a layer mask initialized from that selection, then choose an inpainting model.</li>
+          <li><strong>Save your work.</strong> The plugin writes a new layer or image. Use <em>File → Export As</em> for PNG/JPEG; GIMP's .xcf project stays local.</li>
+        </ol>
+        <p class="muted small">If the menu is missing, reinstall the plugin from Setup, confirm the path shown above, and restart GIMP. The plugin uses the private OpenVINO models folder in this app, not a system install.</p>
+      </div>
+
+      <div class="card">
+        <h2>Private GIMP folders</h2>
+        <p class="muted small">GIMP and the Intel OpenVINO plugin keep their profile, plug-ins and models here. A GIMP installed elsewhere is never modified.</p>
+        <dl class="kv">
+          <dt>GIMP profile</dt><dd id="gimp-profile">—</dd>
+          <dt>OpenVINO models</dt><dd id="gimp-models">—</dd>
+          <dt>Plugin</dt><dd id="gimp-plugin">—</dd>
+        </dl>
+      </div>
+    </section>
+
+    <!-- SETUP -->
+    <section id="view-setup" class="view">
+      <div class="card module-card">
+        <div class="grow">
+          <h2>Portable setup</h2>
+          <p id="setup-detail" class="muted">Checking the local components…</p>
+          <div id="setup-tags" class="model-tags"></div>
+        </div>
+        <div class="row wrap">
+          <button id="setup-install-all" class="btn primary" type="button">Install missing</button>
+          <button id="setup-check" class="btn ghost" type="button">Check again</button>
+        </div>
+      </div>
+
+      <p class="muted small">
+        Everything is copied below the app's own data folder. Only model weights are a separate,
+        user-selected download. Installers run one component at a time and every line of output is kept.
+      </p>
+      <div id="setup-components" class="setup-grid"></div>
+      <div class="card">
+        <dl class="kv">
+          <dt>Tools folder</dt><dd id="setup-tools-dir">—</dd>
+          <dt>GIMP folder</dt><dd id="setup-gimp-dir">—</dd>
+        </dl>
+      </div>
+
+      <div class="card">
+        <div class="section-head tight">
+          <h2>Live logs</h2>
+          <div class="row wrap">
+            <select id="log-select" aria-label="Log file">
+              <option value="setup">Setup</option>
+              <option value="aiolocal">App</option>
+              <option value="ovms">OVMS</option>
+              <option value="opencode">OpenCode</option>
+              <option value="gimp">GIMP</option>
+              <option value="rea">REA</option>
+            </select>
+            <label class="check inline-check"><input id="log-follow" type="checkbox" checked> Follow</label>
+            <button id="log-refresh" class="btn ghost small" type="button">Refresh</button>
+          </div>
+        </div>
+        <p id="log-path" class="muted small"></p>
+        <pre id="log-view" class="log-view">Loading…</pre>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view">
+      <form id="settings-form" class="card settings-form">
+        <h2>Model server</h2>
+        <label>Upstream URL<input id="set-upstream" type="url" placeholder="http://127.0.0.1:8000"></label>
+        <label>Chat model id<input id="set-chat-model" type="text" placeholder="qwen3.5-9b"></label>
+        <label>
+          OVMS executable <strong class="required">(required for local models)</strong>
+          <input id="set-ovms-path" type="text" placeholder="C:\Program Files\OVMS\ovms.exe">
+        </label>
+        <p class="field-hint">Auto-detected when empty. Use the full path to <code>ovms.exe</code>, or the OVMS folder.</p>
+        <label>Models folder (optional)<input id="set-models-dir" type="text" placeholder="%LOCALAPPDATA%\AIOLocal\models"></label>
+        <label class="check"><input id="set-ovms-auto" type="checkbox"> Start OVMS automatically when models are selected</label>
+
+        <h2>Context &amp; memory</h2>
+        <div class="row">
+          <label>Context window (tokens)<input id="set-context" type="number" min="1024" max="131072" step="1"></label>
+          <label>Max output (tokens)<input id="set-output" type="number" min="16" max="32768" step="1"></label>
+          <label>History turns<input id="set-history" type="number" min="0" max="50" step="1"></label>
+        </div>
+        <div class="row">
+          <label>Embedding dimensions<input id="set-embed" type="number" min="64" max="2048" step="1"></label>
+          <label>Temperature<input id="set-temp" type="number" min="0" max="2" step="0.05"></label>
+          <label class="check"><input id="set-memory" type="checkbox"> Memory enabled</label>
+        </div>
+        <label class="check"><input id="set-hint" type="checkbox"> Tell the model when nothing relevant was found</label>
+
+        <h2>Documents</h2>
+        <label>Docling executable (optional PDF fallback)<input id="set-docling" type="text" placeholder="docling"></label>
+
+        <h2>Code (OpenCode)</h2>
+        <div class="row">
+          <label>OpenCode executable (optional)<input id="set-opencode-path" type="text" placeholder="opencode"></label>
+          <label>Server port<input id="set-opencode-port" type="number" min="1024" max="65535" step="1"></label>
+        </div>
+        <label>Workspace folder<input id="set-workspace" type="text" placeholder="%LOCALAPPDATA%\AIOLocal\workspace"></label>
+
+        <h2>Reverse engineering</h2>
+        <div class="row">
+          <label>REA command (optional)<input id="set-rea-command" type="text" placeholder="npx -y rea-agents mcp"></label>
+          <label>REA version (optional)<input id="set-rea-version" type="text" placeholder="latest"></label>
+        </div>
+        <label>Ghidra folder (optional)<input id="set-ghidra" type="text" placeholder="C:\ghidra"></label>
+
+        <h2>GIMP dock</h2>
+        <div class="row">
+          <label>GIMP executable (optional)<input id="set-gimp-path" type="text" placeholder="C:\Program Files\GIMP 3\bin\gimp-3.0.exe"></label>
+          <label class="check"><input id="set-gimp-embed" type="checkbox"> Try to embed the GIMP window</label>
+        </div>
+
+        <div class="row">
+          <button type="submit" class="btn primary">Save settings</button>
+          <span id="settings-status" class="muted small"></span>
+        </div>
+      </form>
+
+      <div class="card">
+        <h2>Data &amp; privacy</h2>
+        <dl class="kv">
+          <dt>Data folder</dt><dd id="path-data">—</dd>
+          <dt>Database</dt><dd id="path-db">—</dd>
+          <dt>Images</dt><dd id="path-images">—</dd>
+          <dt>Logs</dt><dd id="path-logs">—</dd>
+        </dl>
+        <p class="muted small">No telemetry, no remote logging, no auto-update. The only outbound traffic is a model download you start yourself.</p>
+      </div>
+    </section>
+
+    <!-- PLANNED -->
+    <section id="view-planned" class="view">
+      <div class="card planned-card">
+        <div class="planned-badge">Planned</div>
+        <h2 id="planned-title">Coming later</h2>
+        <p id="planned-body" class="muted"></p>
+        <ul id="planned-list" class="planned-list"></ul>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status"></div>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <button id="modal-close" class="modal-close" aria-label="Close">×</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/vendor/katex/auto-render.min.js"></script>
+<script src="/static/app.js?v=__AIO_ASSET_VERSION__"></script>
+</body>
+</html>

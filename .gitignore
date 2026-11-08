@@ -1,0 +1,42 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+Release/
+*.spec.bak
+
+# Local runtime data (never commit)
+data/
+logs/
+artifacts/
+models/
+*.db
+*.db-wal
+*.db-shm
+config.local.json
+
+# User data and test fixtures (large / private)
+dataset.jsonl
+greeting.json
+*.jsonl
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+
+# Progress reports
+REPORT*.txt
+Report*.txt
+report*.txt
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
