@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -367,6 +368,8 @@ class GimpDock:
         self._last_error = ""
         self._started_at = 0.0
         self._version_cache: str | None = None
+        self._log_handle = None
+        self._log_path = paths.log_dir / "gimp.log"
 
     # ------------------------------------------------------------------ discovery
     def executable(self) -> str | None:
@@ -424,6 +427,131 @@ class GimpDock:
         config = self.personal_dir() / "plug-ins" / "openvino_utils" / "tools" / "gimp_openvino_config.json"
         return config.is_file()
 
+    def plugin_tools_dir(self) -> Path:
+        return self.personal_dir() / "plug-ins" / "openvino_utils" / "tools"
+
+    def fastsd_config_path(self) -> Path:
+        return self.plugin_tools_dir() / "fastsd_models.json"
+
+    @staticmethod
+    def _port_open(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.35):
+                return True
+        except OSError:
+            return False
+
+    def plugin_ports(self) -> dict:
+        return {
+            "65432": self._port_open(65432),
+            "65433": self._port_open(65433),
+            "65434": self._port_open(65434),
+        }
+
+    def installed_weights(self) -> list[str]:
+        base = self.plugin_models_dir() / "weights"
+        if not base.is_dir():
+            return []
+        try:
+            return sorted(p.name for p in base.iterdir() if p.is_dir())
+        except OSError:
+            return []
+
+    @staticmethod
+    def has_sd_weights(names: list[str]) -> bool:
+        marks = ("sd", "stable", "dream", "sdxl", "lcm", "turbo", "flux", "sana")
+        return any(any(mark in name.lower() for mark in marks) for name in names)
+
+    def issues(self, weights: list[str] | None = None, ports: dict | None = None) -> list[str]:
+        weights = weights if weights is not None else self.installed_weights()
+        ports = ports if ports is not None else self.plugin_ports()
+        issues: list[str] = []
+        if os.name != "nt":
+            issues.append("GIMP docking is Windows-only; GIMP launches in its own window on Linux.")
+        if not self.plugin_installed():
+            issues.append("The Intel OpenVINO GIMP plugin is not installed. Install it from Setup.")
+        if not self.has_sd_weights(weights):
+            issues.append(
+                "No Stable Diffusion weights were found in the plugin models folder. "
+                "Download an SD model in the plugin's model manager before generating."
+            )
+        if ports.get("65432") and not self.running():
+            issues.append(
+                "Port 65432 is held by another process (an orphaned FastSD server or "
+                "another GIMP instance). Close it or run Repair before generating."
+            )
+        return issues
+
+    def sanitize_plugin_config(self) -> dict:
+        """Remove URL entries the FastSD model picker cannot load.
+
+        The plugin accepts Hugging Face repository names and local model folders,
+        not HTTP URLs. A bad entry makes model selection fail with a confusing
+        error, so repair removes them and keeps a backup.
+        """
+        path = self.fastsd_config_path()
+        if not path.is_file():
+            return {"ok": False, "reason": "the plugin config does not exist yet", "path": str(path), "removed": []}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"ok": False, "reason": f"could not read the config: {exc}", "path": str(path), "removed": []}
+        if isinstance(raw, dict):
+            models = raw.get("models")
+        elif isinstance(raw, list):
+            models = raw
+        else:
+            return {"ok": False, "reason": "unexpected config shape", "path": str(path), "removed": []}
+        if not isinstance(models, list):
+            return {"ok": False, "reason": "the models list is missing", "path": str(path), "removed": []}
+
+        removed: list[str] = []
+        kept: list[str] = []
+        for item in models:
+            name = str(item or "").strip()
+            if not name or name.lower().startswith(("http://", "https://")):
+                removed.append(name or "(empty)")
+            elif name not in kept:
+                kept.append(name)
+        if not kept:
+            kept = ["rupeshs/sd-turbo-openvino"]
+        if not removed:
+            return {"ok": True, "removed": [], "kept": len(kept), "path": str(path)}
+
+        backup = path.with_suffix(path.suffix + ".bak")
+        try:
+            if not backup.exists():
+                shutil.copy2(path, backup)
+            payload = {"models": kept}
+            if isinstance(raw, dict):
+                payload = {**raw, "models": kept}
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError as exc:
+            return {"ok": False, "reason": f"could not write the config: {exc}", "path": str(path), "removed": removed}
+        return {"ok": True, "removed": removed, "kept": len(kept), "path": str(path), "backup": str(backup)}
+
+    def repair(self) -> dict:
+        config = self.sanitize_plugin_config()
+        weights = self.installed_weights()
+        ports = self.plugin_ports()
+        stale = []
+        try:
+            for part in self.plugin_models_dir().rglob("*.part"):
+                part.unlink(missing_ok=True)
+                stale.append(str(part))
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "config": config,
+            "weights": weights,
+            "ports": ports,
+            "issues": self.issues(weights, ports),
+            "cleaned": stale,
+        }
+
     def plugin_version(self) -> str:
         marker = self.paths.tools_dir / "gimp-plugin" / "installed.json"
         try:
@@ -440,6 +568,8 @@ class GimpDock:
             embedded = bool(dock and dock.embedded.is_set())
             error = self._last_error or (dock.error if dock else "")
             version = self.version()
+            weights = self.installed_weights()
+            ports = self.plugin_ports()
             return {
                 "installed": bool(self.executable()),
                 "executable": self.executable() or "",
@@ -454,6 +584,12 @@ class GimpDock:
                 "started_at": int(self._started_at * 1000) if self._started_at else 0,
                 "plugin_installed": self.plugin_installed(),
                 "plugin_version": self.plugin_version(),
+                "plugin_ports": ports,
+                "plugin_server_ready": bool(ports.get("65432")),
+                "weights": weights,
+                "sd_weights": self.has_sd_weights(weights),
+                "issues": self.issues(weights, ports),
+                "log": str(self._log_path),
                 "personal_dir": str(self.personal_dir()),
                 "models_dir": str(self.plugin_models_dir()),
             }
@@ -498,10 +634,17 @@ class GimpDock:
         if image_id:
             args.append(str(self._image_path(image_id)))
         try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_handle = open(self._log_path, "ab", buffering=0)
+            self._log_handle.write(
+                f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} launching GIMP ---\n".encode("utf-8")
+            )
             self._proc = subprocess.Popen(
                 args,
                 cwd=str(Path(exe).parent),
                 env=self._env(),
+                stdout=self._log_handle,
+                stderr=subprocess.STDOUT,
             )
         except OSError as exc:
             raise GimpError(f"could not start GIMP: {exc}") from exc
@@ -582,3 +725,9 @@ class GimpDock:
 
     def shutdown(self) -> None:
         self.release()
+        try:
+            if self._log_handle is not None:
+                self._log_handle.close()
+        except OSError:
+            pass
+        self._log_handle = None

@@ -4,7 +4,7 @@
 #
 # Output:
 #   dist\AIOLocal\AIOLocal.exe
-#   dist\AIOLocal-0.1.0-win64.zip
+#   dist\AIOLocal-0.2.0-win64.zip
 #
 # The build is a PyInstaller "onedir" bundle so startup stays fast and the web
 # assets are visible for auditing. No model weights are bundled.
@@ -24,8 +24,12 @@ Write-Host "Installing build tools..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 Write-Host "Running tests before packaging..." -ForegroundColor Cyan
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $python -m pytest -q
-if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to build" }
+$testCode = $LASTEXITCODE
+$ErrorActionPreference = $previousPreference
+if ($testCode -ne 0) { throw "Tests failed; refusing to build" }
 
 Write-Host "Cleaning old build output..." -ForegroundColor Cyan
 foreach ($path in @("build", "dist")) {
@@ -33,8 +37,12 @@ foreach ($path in @("build", "dist")) {
 }
 
 Write-Host "Running PyInstaller..." -ForegroundColor Cyan
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $python -m PyInstaller --noconfirm --clean "packaging\aiolocal.spec"
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+$buildCode = $LASTEXITCODE
+$ErrorActionPreference = $previousPreference
+if ($buildCode -ne 0) { throw "PyInstaller failed" }
 
 $exe = Join-Path $root "dist\AIOLocal\AIOLocal.exe"
 if (-not (Test-Path $exe)) { throw "Build finished but $exe is missing" }
@@ -47,7 +55,7 @@ foreach ($doc in @("README.md", "NOTICE", "LICENSE", "SECURITY.md")) {
     }
 }
 
-$zip = Join-Path $root "dist\AIOLocal-0.1.0-win64.zip"
+$zip = Join-Path $root "dist\AIOLocal-0.2.0-win64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Write-Host "Creating zip..." -ForegroundColor Cyan
 Compress-Archive -Path (Join-Path $root "dist\AIOLocal\*") -DestinationPath $zip

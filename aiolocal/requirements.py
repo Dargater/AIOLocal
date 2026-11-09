@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -404,6 +405,8 @@ class RequirementsManager:
     # ------------------------------------------------------------------ detection
     def _detect(self, component_id: str) -> dict:
         settings = self.settings_store.load()
+        if os.name != "nt":
+            return self._detect_linux(component_id, settings)
         tools = self.paths.tools_dir
         data = self.paths.data_dir
         if component_id == "ovms":
@@ -513,6 +516,64 @@ class RequirementsManager:
 
         return {"installed": False, "path": "", "detected_version": ""}
 
+    def _detect_linux(self, component_id: str, settings) -> dict:
+        """Linux source builds use distribution/system components, not Windows bundles."""
+        if component_id == "ovms":
+            for candidate in (shutil.which("ovms"), str(self.paths.tools_dir / "ovms" / "ovms")):
+                if candidate and Path(candidate).is_file():
+                    return {
+                        "installed": True,
+                        "path": str(candidate),
+                        "detected_version": _run_version(Path(candidate), ["--version"]),
+                    }
+            return {"installed": False, "path": "", "detected_version": ""}
+        if component_id == "node":
+            found = shutil.which("node")
+            return {
+                "installed": bool(found),
+                "path": found or "",
+                "detected_version": _run_version(Path(found), ["--version"]) if found else "",
+                "portable": False,
+            }
+        if component_id == "opencode":
+            from .code import CodeWorkspace
+
+            exe = CodeWorkspace(self.paths, self.settings_store, base_url="").executable()
+            return {"installed": bool(exe), "path": exe or "", "detected_version": ""}
+        if component_id == "python":
+            return {
+                "installed": True,
+                "path": sys.executable,
+                "detected_version": platform.python_version(),
+                "portable": False,
+            }
+        if component_id == "gimp":
+            configured = (settings.gimp_path or "").strip().strip('"')
+            candidates = [configured] if configured else []
+            candidates += [shutil.which("gimp-3.0"), shutil.which("gimp")]
+            for candidate in candidates:
+                if candidate and Path(candidate).is_file():
+                    return {
+                        "installed": True,
+                        "path": str(candidate),
+                        "detected_version": _run_version(Path(candidate), ["--version"]),
+                    }
+            return {"installed": False, "path": "", "detected_version": ""}
+        if component_id == "gimp_plugin":
+            candidates = [
+                self.gimp_personal / "plug-ins" / "openvino_utils",
+                Path.home() / ".config" / "GIMP" / "3.0" / "plug-ins" / "openvino_utils",
+            ]
+            for plugin_dir in candidates:
+                if plugin_dir.is_dir():
+                    return {
+                        "installed": True,
+                        "path": str(plugin_dir),
+                        "detected_version": GIMP_PLUGIN_VERSION,
+                    }
+            return {"installed": False, "path": "", "detected_version": ""}
+        return {"installed": False, "path": "", "detected_version": ""}
+
     @staticmethod
     def _folder_version(path: Path, fallback: str) -> str:
         for part in path.parts:
@@ -577,6 +638,8 @@ class RequirementsManager:
             "missing": len(missing),
             "installing": len(busy),
             "ready": not missing,
+            "platform": "windows" if os.name == "nt" else "linux",
+            "source_build": os.name != "nt",
             "tools_dir": str(self.paths.tools_dir),
             "gimp_dir": str(self.gimp_personal.parent),
             "checked_at": int(self._last_check * 1000),
@@ -588,6 +651,18 @@ class RequirementsManager:
 
     # ------------------------------------------------------------------ install orchestration
     def install(self, component_id: str) -> dict:
+        if os.name != "nt":
+            return {
+                "ok": False,
+                "manual": True,
+                "component": component_id,
+                "message": (
+                    "This is a Linux source build. Install OpenVINO Model Server, Node, "
+                    "OpenCode and GIMP with your distribution packages, then use the "
+                    "commands in README.md (Linux source build). AIO Local only ships "
+                    "Windows binaries."
+                ),
+            }
         definitions = {d["id"]: d for d in self._definitions()}
         definition = definitions.get(component_id)
         if not definition:

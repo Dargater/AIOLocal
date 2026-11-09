@@ -138,7 +138,8 @@ CATALOG: list[dict] = [
         "size_gb": 5.8,
         "license": "Apache-2.0",
         "role": "Main chat model",
-        "description": "Best local quality on Arc graphics. Needs about 8 GB of free RAM while loaded.",
+        "description": "Best local quality on Arc graphics. Needs about 8 GB of free RAM while loaded. Qwen3.5 is image-text-to-text, so it can read attached images directly.",
+        "vision": True,
     },
     {
         "id": "qwen3-4b",

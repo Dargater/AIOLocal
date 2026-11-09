@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .context import AppContext
 from .llm import UpstreamError
-from .memory import store
+from .memory import store, semantic
 from .memory.assemble import InputTooLarge, assemble
 from .memory.retrieve import retrieve
 from .memory.text import content_hash, new_id, normalise, truncate_tokens
@@ -259,7 +259,7 @@ def _archive_assistant(
     meta = {"model": model}
     if tool_calls:
         meta["tool_calls"] = tool_calls
-    return store.archive_message(
+    message_id, inserted = store.archive_message(
         ctx.db,
         conversation_id=conversation_id,
         role="assistant",
@@ -269,6 +269,12 @@ def _archive_assistant(
         meta=meta,
         embed_dim=ctx.settings.embed_dim,
     )
+    if inserted:
+        try:
+            semantic.index_message(ctx.db, ctx.settings, message_id, content)
+        except Exception:
+            pass
+    return message_id, inserted
 
 
 def _enqueue_filing(
@@ -307,6 +313,21 @@ async def _prepare(
 
     user_text, last_user_index = _last_user(messages)
     image_parts = _image_parts(messages, last_user_index)
+    if image_parts:
+        # Refuse early instead of silently dropping the image inside a text model.
+        # Only catalog models are checked: an external OpenAI-compatible server may
+        # have its own vision model that this app does not know about.
+        from .models import catalog_entry
+
+        requested = str(body.get("model") or ctx.settings.chat_model or "")
+        entry = catalog_entry(requested)
+        if entry is not None and not entry.get("vision"):
+            return _error(
+                400,
+                f"{entry['name']} is a text-only model. Choose a vision model such as "
+                "Qwen3.5 9B or Qwen3-VL 4B in Models, then attach the image again.",
+                "model_not_vision",
+            )
     if not user_text.strip() and image_parts:
         user_text = "Describe this image."
     if not user_text.strip():
@@ -331,6 +352,10 @@ async def _prepare(
         request_id=request_id,
         embed_dim=ctx.settings.embed_dim,
     )
+    try:
+        semantic.index_message(ctx.db, ctx.settings, user_msg_id, user_text)
+    except Exception:
+        pass
 
     # Archive new tool results so the memory sees the whole turn, but never re-archive
     # the assistant tool_calls the gateway itself produced earlier (dedupe handles it).
@@ -395,6 +420,7 @@ async def _prepare(
         conversation_id=conversation_id,
         exclude_message_ids=exclude,
         request_id=request_id,
+        force_lookup=(headers.get("x-aio-memory-lookup") == "1"),
     )
 
     mode = str(request.headers.get("x-aio-mode") or "chat").lower()

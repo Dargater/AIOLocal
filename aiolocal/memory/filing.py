@@ -12,11 +12,14 @@ import json
 import re
 from typing import Iterable
 
-from . import store
+import httpx
+
+from . import semantic, store
 from .text import estimate_tokens, first_sentence, keywords, normalise, truncate_tokens
 
 from ..config import Settings
 from ..db import Database
+from ..llm import api_url
 
 TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9/_-]{1,60}$")
 ALLOWED_KINDS = {"episodic", "profile", "project", "decision", "fact", "code", "re"}
@@ -69,6 +72,7 @@ def heuristic_file_turn(
         embed_dim=settings.embed_dim,
     )
     _link_previous(db, conversation_id, summary_id)
+    semantic.index_summary(db, settings, summary_id, title, body)
     return summary_id
 
 
@@ -87,6 +91,92 @@ def _link_previous(db: Database, conversation_id: str, summary_id: str) -> None:
 
 
 # --------------------------------------------------------------------- model output
+def model_file_turn(
+    db: Database,
+    *,
+    conversation_id: str,
+    user_message_id: str,
+    assistant_message_id: str,
+    user_text: str,
+    assistant_text: str,
+    settings: Settings,
+) -> str | None:
+    """Ask the configured filing model to file this turn.
+
+    Returns a summary id, or ``None`` so the caller can use the deterministic
+    heuristic. This intentionally never raises: filing is background work.
+    """
+    model = str(settings.filing_model or "").strip()
+    if not model:
+        return None
+    try:
+        topics = store.list_topics(db)
+        candidates = store.list_summaries(db, limit=5)
+        allowed_ids = [user_message_id, assistant_message_id]
+        prompt = build_filing_prompt(
+            user_text=user_text,
+            assistant_text=assistant_text,
+            allowed_ids=allowed_ids,
+            topics=topics,
+            summaries=candidates,
+        )
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a precise memory filing engine. Output JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 900,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        with httpx.Client(timeout=120.0, trust_env=False) as client:
+            response = client.post(api_url(settings.upstream_base_url, "chat/completions"), json=payload)
+        if response.status_code >= 400:
+            return None
+        content = response.json()["choices"][0]["message"].get("content") or ""
+        parsed = _extract_json(str(content))
+        validated, error = validate_filing(
+            parsed,
+            allowed_ids=allowed_ids,
+            candidate_summary_ids=[str(s["id"]) for s in candidates],
+        )
+        if error or not validated:
+            return None
+        created = apply_filing(db, validated, embed_dim=settings.embed_dim)
+        if not created:
+            return None
+        for summary_id in created:
+            row = store.get_summary(db, summary_id)
+            if row:
+                semantic.index_summary(
+                    db, settings, summary_id, row.get("title") or "", row.get("body") or ""
+                )
+        _link_previous(db, conversation_id, created[0])
+        return created[0]
+    except Exception:
+        return None
+
+
+def _extract_json(text: str) -> object:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 def build_filing_prompt(
     *,
     user_text: str,

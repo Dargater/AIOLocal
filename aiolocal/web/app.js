@@ -16,6 +16,8 @@
     streaming: false,
     controller: null,
     chatImage: null,
+    chatDocJob: null,
+    chatDocTimer: null,
     selectedImage: null,
     gallery: [],
     view: "chat",
@@ -231,7 +233,7 @@
     images: ["Images", "Generate and edit images locally through OVMS."],
     memory: ["Memory", "Inspect exactly what the assistant remembers and why."],
     models: ["Models", "Download models, watch progress and choose a device for each one."],
-    documents: ["Documents", "Your private knowledge library — upload, scan, search."],
+    documents: ["Knowledge", "Your private reference library — upload, scan, search. No fine-tuning."],
     code: ["Code", "Manage the local OpenCode server and browse its workspace."],
     re: ["Reverse engineering", "REA tools over MCP; every call is explicit."],
     gimp: ["GIMP dock", "Launch GIMP and hand it a generated image."],
@@ -306,6 +308,8 @@
       state.models = payload.models;
       state.paths = payload.paths;
       applyPills(payload);
+      populateChatModels();
+      populateImageModels();
       if (state.view === "memory") renderMemoryStats();
       if (state.view === "models") renderModels();
       if (state.view === "settings") fillSettings();
@@ -423,9 +427,47 @@
 
   function currentModelSupportsVision() {
     const models = (state.models && state.models.models) || [];
-    const id = (state.settings && state.settings.chat_model) || "";
+    const select = $("#chat-model");
+    const id = (select && select.value) || (state.settings && state.settings.chat_model) || "";
     const entry = models.find((model) => model.id === id);
     return !!(entry && entry.vision);
+  }
+
+  function populateChatModels() {
+    const select = $("#chat-model");
+    if (!select) return;
+    const models = ((state.models && state.models.models) || []).filter(
+      (model) => model.task === "text_generation"
+    );
+    const current = select.value || (state.settings && state.settings.chat_model) || "";
+    if (!models.length) {
+      select.innerHTML = `<option value="${escapeAttr(current)}">${escapeHtml(current || "no model")}</option>`;
+      return;
+    }
+    select.innerHTML = models.map((model) => {
+      const tags = [model.vision ? "vision" : "", model.loaded ? "loaded" : ""].filter(Boolean).join(" · ");
+      return `<option value="${escapeAttr(model.id)}" ${model.id === current ? "selected" : ""}>` +
+        `${escapeHtml(model.name || model.id)}${tags ? " · " + escapeHtml(tags) : ""}</option>`;
+    }).join("");
+    if (!select.value && current) select.value = current;
+  }
+
+  function populateImageModels() {
+    const models = ((state.models && state.models.models) || []).filter(
+      (model) => model.task === "image_generation"
+    );
+    const ids = models.map((model) => model.id);
+    const choose = (select, fallback) => {
+      if (!select) return;
+      const current = select.value || fallback;
+      const options = ids.length ? ids : [fallback];
+      select.innerHTML = options.map((id) =>
+        `<option value="${escapeAttr(id)}" ${id === current ? "selected" : ""}>${escapeHtml(id)}</option>`
+      ).join("");
+      if (!select.value) select.value = fallback;
+    };
+    choose($("#img-model"), "sd15");
+    choose($("#img-edit-model"), "sd15-inpaint");
   }
 
   function clearChatImage() {
@@ -544,7 +586,7 @@
     $("#chat-status").textContent = "thinking…";
 
     const body = {
-      model: (state.settings && state.settings.chat_model) || undefined,
+      model: ($("#chat-model") && $("#chat-model").value) || (state.settings && state.settings.chat_model) || undefined,
       messages: [{
         role: "user",
         content: image
@@ -561,15 +603,18 @@
     let requestId = "";
     let memoryCount = 0;
     let finished = false;
+    const headers = {
+      "Content-Type": "application/json",
+      "X-AIO-Token": TOKEN,
+      "X-AIO-Conversation": state.conversationId,
+    };
+    const knowledge = $("#chat-knowledge") ? $("#chat-knowledge").value : "";
+    if (knowledge) headers["X-AIO-Knowledge"] = knowledge;
 
     try {
       const res = await fetch("/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-AIO-Token": TOKEN,
-          "X-AIO-Conversation": state.conversationId,
-        },
+        headers,
         body: JSON.stringify(body),
         signal: state.controller.signal,
       });
@@ -644,6 +689,97 @@
     el.style.height = Math.min(220, el.scrollHeight) + "px";
   }
 
+  /* ------------------------------------------------------------ documents in chat */
+  function renderDocumentJob(job) {
+    const box = $("#chat-doc-job");
+    if (!box) return;
+    box.classList.remove("hidden");
+    $("#chat-doc-name").textContent = job.filename || "document.pdf";
+    const total = Number(job.pages_total || 0);
+    const done = Number(job.pages_done || 0);
+    const pct = total ? Math.max(4, Math.min(100, Math.round((done / total) * 100))) : 4;
+    $("#chat-doc-bar").style.width = `${pct}%`;
+    const stateText = {
+      queued: "Queued…",
+      running: `Reading pages ${done}/${total || "?"} — batch ${job.batches_done || 0}/${job.batches_total || "?"}`,
+      done: "Saved to memory.",
+      error: `Failed: ${job.error || "unknown error"}`,
+      cancelled: "Cancelled.",
+    }[job.state] || job.state;
+    $("#chat-doc-status").textContent = stateText;
+  }
+
+  function stopDocumentPolling() {
+    if (state.chatDocTimer) {
+      clearInterval(state.chatDocTimer);
+      state.chatDocTimer = null;
+    }
+  }
+
+  function appendDocumentMemory(job) {
+    if (!job || !job.final) return;
+    const text = `**Document memory: ${job.title || job.filename}**\n\n${job.final}\n\n` +
+      `_Saved as a durable memory entry (${job.pages_total} pages). Ask about it in any chat._`;
+    appendMessage("assistant", text);
+  }
+
+  async function pollDocumentJob() {
+    const job = state.chatDocJob;
+    if (!job || !job.id) { stopDocumentPolling(); return; }
+    try {
+      const current = await api(`/documents/jobs/${encodeURIComponent(job.id)}`);
+      state.chatDocJob = current;
+      renderDocumentJob(current);
+      if (["done", "error", "cancelled"].includes(current.state)) {
+        stopDocumentPolling();
+        if (current.state === "done") {
+          appendDocumentMemory(current);
+          toast("Document analysis saved to memory.");
+          refreshState();
+        } else if (current.state === "error") {
+          toast(current.error || "Document analysis failed.", true);
+        }
+      }
+    } catch (err) {
+      stopDocumentPolling();
+      toast(err.message, true);
+    }
+  }
+
+  async function startDocumentAnalysis(file) {
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name || "")) {
+      toast("Choose a PDF file.", true);
+      return;
+    }
+    stopDocumentPolling();
+    state.chatDocJob = { id: "", filename: file.name, state: "queued", pages_total: 0 };
+    renderDocumentJob(state.chatDocJob);
+    try {
+      const res = await fetch(
+        `/api/v1/documents/analyze?filename=${encodeURIComponent(file.name)}`,
+        {
+          method: "POST",
+          headers: { "X-AIO-Token": TOKEN, "Content-Type": "application/octet-stream" },
+          body: file,
+        }
+      );
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
+      if (!res.ok) {
+        throw new Error((data && data.error && data.error.message) || `Upload failed (HTTP ${res.status})`);
+      }
+      state.chatDocJob = data.job;
+      renderDocumentJob(data.job);
+      state.chatDocTimer = setInterval(pollDocumentJob, 1500);
+    } catch (err) {
+      $("#chat-doc-status").textContent = err.message;
+      toast(err.message, true);
+    } finally {
+      $("#chat-document-input").value = "";
+    }
+  }
+
   /* ------------------------------------------------------------ images */
   async function refreshGallery() {
     try {
@@ -685,6 +821,7 @@
     try {
       const seedRaw = $("#img-seed").value.trim();
       const payload = {
+        model: ($("#img-model") && $("#img-model").value) || "sd15",
         prompt,
         negative_prompt: $("#img-negative").value.trim(),
         width: parseInt($("#img-width").value, 10) || 512,
@@ -716,7 +853,11 @@
     try {
       await api("/images/edit", {
         method: "POST",
-        body: { image_id: state.selectedImage, prompt },
+        body: {
+          image_id: state.selectedImage,
+          prompt,
+          model: ($("#img-edit-model") && $("#img-edit-model").value) || "sd15-inpaint",
+        },
       });
       $("#img-edit-status").textContent = "Done.";
       await refreshGallery();
@@ -756,6 +897,24 @@
       renderJobs(jobs.data || []);
     } catch (err) {
       toast(err.message, true);
+    }
+  }
+
+  async function reembedMemory() {
+    const status = $("#reembed-status");
+    const button = $("#mem-reembed");
+    if (button) button.disabled = true;
+    if (status) status.textContent = "Queueing semantic re-embedding…";
+    try {
+      const result = await api("/memory/reembed?limit=5000", { method: "POST" });
+      if (status) status.textContent = `Queued re-embedding with ${result.model}. Watch Background jobs.`;
+      toast("Semantic re-embedding queued.");
+      setTimeout(() => { if (state.view === "memory") refreshMemory(); }, 1200);
+    } catch (err) {
+      if (status) status.textContent = "";
+      toast(err.message, true);
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -1289,6 +1448,17 @@
       </div>`).join("");
   }
 
+  function populateKnowledgeSelect(collections) {
+    const select = $("#chat-knowledge");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">Knowledge: off</option>' +
+      (collections || []).map((c) =>
+        `<option value="${escapeAttr(c.slug)}">${escapeHtml(c.name || c.slug)} (${c.documents || 0})</option>`
+      ).join("");
+    if (current && (collections || []).some((c) => c.slug === current)) select.value = current;
+  }
+
   async function refreshKnowledge() {
     try {
       const [status, documents] = await Promise.all([
@@ -1298,6 +1468,7 @@
       state.knowledge = { status, documents: documents.data || [] };
       renderKnowledgeStats(status.stats);
       $("#kb-inbox").textContent = status.inbox || "—";
+      populateKnowledgeSelect(status.collections || []);
 
       const filter = $("#kb-filter");
       const current = filter.value;
@@ -1326,7 +1497,7 @@
         {
           method: "POST",
           headers: { "X-AIO-Token": TOKEN, "Content-Type": "application/octet-stream" },
-          body: await file.arrayBuffer(),
+          body: file,
         }
       );
       let data = null;
@@ -1691,6 +1862,8 @@
       status.plugin_installed
         ? `<span class="tag ok">plugin ${escapeHtml(status.plugin_version || "")}</span>`
         : '<span class="tag err">plugin missing</span>',
+      status.sd_weights ? '<span class="tag ok">SD weights found</span>' : '<span class="tag err">no SD weights</span>',
+      status.plugin_server_ready ? '<span class="tag ok">plugin server listening</span>' : "",
     ].filter(Boolean).join("");
     $("#gimp-detail").textContent = status.running
       ? `GIMP running (pid ${status.pid})${status.embedded ? " and docked" : " in its own window"}${status.last_error ? " · " + status.last_error : ""}`
@@ -1704,6 +1877,10 @@
       : "not installed — open Setup";
     $("#gimp-launch").disabled = !status.installed || status.running;
     $("#gimp-release").disabled = !status.running && !status.embedded;
+    const issues = status.issues || [];
+    $("#gimp-issues").innerHTML = issues.length
+      ? issues.map((issue) => `<div class="result"><div class="result-body">${escapeHtml(issue)}</div></div>`).join("")
+      : '<p class="muted small">No GIMP problems detected.</p>';
   }
 
   async function refreshGimp() {
@@ -1718,6 +1895,7 @@
         ? rows.map((img) => `<option value="${escapeAttr(img.id)}">${escapeHtml(img.prompt || img.id)} · ${escapeHtml(fmtDate(img.created_at))}</option>`).join("")
         : '<option value="">No images yet</option>';
       if (current) select.value = current;
+      await refreshPhotoGimp();
     } catch (err) {
       toast(err.message, true);
     }
@@ -1752,6 +1930,77 @@
     } catch (err) { toast(err.message, true); }
   }
 
+  async function refreshPhotoGimp() {
+    try {
+      const status = await api("/gimp/photogimp");
+      const tag = $("#photogimp-tag");
+      tag.textContent = status.installed
+        ? `installed ${status.version || ""}`.trim()
+        : status.available ? "not installed" : "manual install";
+      tag.className = `tag ${status.installed ? "ok" : ""}`;
+      $("#photogimp-install").disabled = !status.available;
+      $("#photogimp-remove").disabled = !status.installed;
+      $("#photogimp-status").textContent = status.installed
+        ? `${status.files_present}/${status.files} files present in ${status.profile}. Licence ${status.license}.`
+        : status.note;
+    } catch (err) {
+      $("#photogimp-tag").textContent = "unavailable";
+      $("#photogimp-status").textContent = err.message;
+    }
+  }
+
+  async function installPhotoGimp() {
+    const button = $("#photogimp-install");
+    button.disabled = true;
+    $("#photogimp-status").textContent = "Downloading the official PhotoGIMP release…";
+    try {
+      const result = await api("/gimp/photogimp/install", { method: "POST" });
+      $("#photogimp-status").textContent =
+        `Installed PhotoGIMP ${result.version} (${result.installed_files} files, ${result.backed_up} backed up).`;
+      toast("PhotoGIMP installed into the private GIMP profile.");
+      await refreshPhotoGimp();
+    } catch (err) {
+      $("#photogimp-status").textContent = "";
+      toast(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function removePhotoGimp() {
+    if (!window.confirm("Remove PhotoGIMP and restore the files it replaced?")) return;
+    const button = $("#photogimp-remove");
+    button.disabled = true;
+    try {
+      const result = await api("/gimp/photogimp/remove", { method: "POST" });
+      toast(`Removed ${result.removed} files; restored ${result.restored}.`);
+      await refreshPhotoGimp();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function repairGimp() {
+    const button = $("#gimp-repair");
+    button.disabled = true;
+    $("#photogimp-status").textContent = "Repairing the plugin model list…";
+    try {
+      const result = await api("/gimp/repair", { method: "POST" });
+      const removed = (result.config && result.config.removed) || [];
+      $("#photogimp-status").textContent = removed.length
+        ? `Repaired the model list: removed ${removed.length} invalid URL entr${removed.length === 1 ? "y" : "ies"}.`
+        : "Plugin configuration is already valid.";
+      await refreshGimp();
+    } catch (err) {
+      $("#photogimp-status").textContent = "";
+      toast(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   /* ------------------------------------------------------------ settings */
   function fillSettings() {
     const s = state.settings;
@@ -1767,6 +2016,9 @@
     set("#set-output", s.max_output_tokens);
     set("#set-history", s.short_history_turns);
     set("#set-embed", s.embed_dim);
+    set("#set-embedding-backend", s.embedding_backend || "hash");
+    set("#set-embedding-model", s.embedding_model);
+    set("#set-filing-model", s.filing_model);
     set("#set-temp", s.temperature);
     check("#set-memory", s.memory_enabled);
     check("#set-hint", s.memory_hint);
@@ -1799,6 +2051,9 @@
       max_output_tokens: parseInt($("#set-output").value, 10),
       short_history_turns: parseInt($("#set-history").value, 10),
       embed_dim: parseInt($("#set-embed").value, 10),
+      embedding_backend: $("#set-embedding-backend").value,
+      embedding_model: $("#set-embedding-model").value.trim(),
+      filing_model: $("#set-filing-model").value.trim(),
       temperature: parseFloat($("#set-temp").value),
       memory_enabled: $("#set-memory").checked,
       memory_hint: $("#set-hint").checked,
@@ -1914,6 +2169,11 @@
       if (file) attachChatImage(file);
     });
     $("#chat-attachment-remove").addEventListener("click", clearChatImage);
+    $("#chat-add-document").addEventListener("click", () => $("#chat-document-input").click());
+    $("#chat-document-input").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (file) startDocumentAnalysis(file);
+    });
     $("#prompt").addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
@@ -1965,6 +2225,7 @@
         toast("Consolidation queued.");
       } catch (err) { toast(err.message, true); }
     });
+    $("#mem-reembed").addEventListener("click", reembedMemory);
 
     $("#model-list").addEventListener("click", (event) => {
       const pull = event.target.closest("[data-pull]");
@@ -2054,6 +2315,9 @@
     $("#gimp-launch").addEventListener("click", launchGimp);
     $("#gimp-open").addEventListener("click", openGimpImage);
     $("#gimp-release").addEventListener("click", releaseGimpDock);
+    $("#photogimp-install").addEventListener("click", installPhotoGimp);
+    $("#photogimp-remove").addEventListener("click", removePhotoGimp);
+    $("#gimp-repair").addEventListener("click", repairGimp);
 
     $("#settings-form").addEventListener("submit", saveSettings);
 
@@ -2080,6 +2344,7 @@
     }
 
     await refreshConversations();
+    await refreshKnowledge();
     const first = state.conversations[0];
     if (first) {
       $("#conversation-select").value = first.id;

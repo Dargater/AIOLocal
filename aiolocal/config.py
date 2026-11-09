@@ -14,7 +14,16 @@ from pathlib import Path
 
 
 def default_data_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    """Per-user data folder on Windows and Linux.
+
+    Windows keeps the familiar ``%LOCALAPPDATA%\\AIOLocal``. On Linux the XDG
+    data directory is used so a source build behaves like a normal desktop app
+    and never writes into the checkout.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return Path(base) / "AIOLocal"
 
 
@@ -92,7 +101,13 @@ class Settings:
     memory_enabled: bool = True
     memory_hint: bool = True
     embedding_backend: str = "hash"  # "hash" or "ovms"
+    embedding_model: str = "qwen3-embedding-0.6b"
     embed_dim: int = 256
+    # Document vision (PDF pages -> main vision model -> summary memory)
+    document_pages_per_batch: int = 3
+    document_dpi: int = 140
+    document_max_pages: int = 300
+    document_keep_pages: bool = False
     # Local OVMS
     ovms_path: str = ""
     models_dir: str = ""
@@ -130,6 +145,11 @@ class Settings:
         self.max_output_tokens = max(16, min(int(self.max_output_tokens), 32768))
         self.short_history_turns = max(0, min(int(self.short_history_turns), 50))
         self.embed_dim = max(64, min(int(self.embed_dim), 2048))
+        self.document_pages_per_batch = max(1, min(int(self.document_pages_per_batch), 8))
+        self.document_dpi = max(72, min(int(self.document_dpi), 220))
+        self.document_max_pages = max(1, min(int(self.document_max_pages), 2000))
+        if self.embedding_backend not in ("hash", "ovms"):
+            self.embedding_backend = "hash"
         self.temperature = max(0.0, min(float(self.temperature), 2.0))
         self.knowledge_top_k = max(1, min(int(self.knowledge_top_k), 20))
         self.knowledge_scan_seconds = max(0, min(int(self.knowledge_scan_seconds), 3600))

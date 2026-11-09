@@ -10,11 +10,17 @@ hiddenimports = collect_submodules("uvicorn") + [
     "huggingface_hub",
     "huggingface_hub.utils",
     "pypdf",
+    "pypdfium2",
+    "PIL",
+    "PIL.Image",
     "aiolocal.app",
     "aiolocal.control",
     "aiolocal.gateway",
     "aiolocal.images",
     "aiolocal.models",
+    "aiolocal.documents",
+    "aiolocal.photogimp",
+    "aiolocal.memory.semantic",
 ]
 
 a = Analysis(
@@ -31,7 +37,6 @@ a = Analysis(
         "matplotlib",
         "pandas",
         "scipy",
-        "PIL",
         "notebook",
         "IPython",
         "pytest",

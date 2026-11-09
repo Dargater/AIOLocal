@@ -39,8 +39,12 @@ from .db import now_ms
 from .llm import api_url
 from .memory.text import embed, estimate_tokens, pack, new_id, normalise
 
-MAX_FILE_BYTES = 40 * 1024 * 1024
-MAX_TEXT_CHARS = 2_000_000
+# A dataset can be hundreds of megabytes. Uploads stream to disk and JSONL/CSV
+# extraction reads line by line, so the process memory stays flat regardless of
+# file size. The cap is a disk-safety limit, not a memory limit.
+MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_TEXT_CHARS = 4_000_000
+MAX_JSONL_LINES = 20000
 MAX_CHUNKS_PER_DOC = 4000
 MAX_PDF_PAGES = 600
 SUPPORTED_EXTENSIONS = {
@@ -338,6 +342,32 @@ class KnowledgeBase:
                 )
         return document_id
 
+    def upload_target(self, filename: str, collection: str) -> tuple[Path, Path, str]:
+        """Return ``(temporary, final, collection_slug)`` for a streamed upload.
+
+        The caller writes bytes to the temporary path and then renames it. This
+        avoids ever holding a large dataset in RAM and keeps the final path inside
+        the app-managed knowledge folder.
+        """
+        from .security import safe_join
+
+        clean_name = SAFE_NAME_RE.sub("_", Path(str(filename or "")).name).strip(" .")
+        if not clean_name:
+            raise KnowledgeError("the file needs a name")
+        clean_name = clean_name[:160]
+        suffix = Path(clean_name).suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise KnowledgeError(
+                f"unsupported file type {suffix or '(none)'}; supported: "
+                + ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            )
+        slug = normalise_slug(collection)
+        target_dir = safe_join(self.files_dir, slug)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = safe_join(target_dir, clean_name)
+        temporary = target.with_suffix(target.suffix + ".part")
+        return temporary, target, slug
+
     def ingest_path(
         self, path: Path, collection: str, *, embed_dim: int = 256, docling_path: str = ""
     ) -> dict:
@@ -352,18 +382,17 @@ class KnowledgeBase:
             )
         size = path.stat().st_size
         if size > MAX_FILE_BYTES:
-            raise KnowledgeError(f"file is too large ({size // (1024*1024)} MB; max 40 MB)")
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            raise KnowledgeError(f"could not read the file: {exc}") from exc
-        digest = hashlib.sha256(raw).hexdigest()
+            raise KnowledgeError(
+                f"file is too large ({size // (1024*1024)} MB; max "
+                f"{MAX_FILE_BYTES // (1024*1024)} MB)"
+            )
+        digest = _file_digest(path)
         if self._is_unchanged(collection, str(path), digest):
             # Skip extraction entirely: re-parsing every PDF on every inbox scan
             # would make a large library unusable on a laptop.
             return {"document_id": None, "skipped": True, "chars": 0}
         try:
-            text = extract_text(path, raw, docling_path=docling_path)
+            text = extract_text_path(path, docling_path=docling_path)
         except KnowledgeError:
             raise
         except Exception as exc:  # extraction libraries can raise anything
@@ -409,35 +438,20 @@ class KnowledgeBase:
         keep working after the upload request ends. Nothing is written outside that
         folder.
         """
-        from .security import safe_join
-
         if not isinstance(data, (bytes, bytearray)) or not data:
             raise KnowledgeError("the file is empty")
         if len(data) > MAX_FILE_BYTES:
             raise KnowledgeError(
-                f"file is too large ({len(data) // (1024*1024)} MB; max 40 MB)"
+                f"file is too large ({len(data) // (1024*1024)} MB; max "
+                f"{MAX_FILE_BYTES // (1024*1024)} MB)"
             )
-        clean_name = SAFE_NAME_RE.sub("_", Path(str(filename or "")).name).strip(" .")
-        if not clean_name:
-            raise KnowledgeError("the file needs a name")
-        clean_name = clean_name[:160]
-        suffix = Path(clean_name).suffix.lower()
-        if suffix not in SUPPORTED_EXTENSIONS:
-            raise KnowledgeError(
-                f"unsupported file type {suffix or '(none)'}; supported: "
-                + ", ".join(sorted(SUPPORTED_EXTENSIONS))
-            )
-        slug = normalise_slug(collection)
-        target_dir = safe_join(self.files_dir, slug)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = safe_join(target_dir, clean_name)
-        tmp = target.with_suffix(target.suffix + ".part")
+        temporary, target, slug = self.upload_target(str(filename or ""), collection)
         try:
-            tmp.write_bytes(bytes(data))
-            os.replace(tmp, target)
+            temporary.write_bytes(bytes(data))
+            os.replace(temporary, target)
         except OSError as exc:
             try:
-                tmp.unlink(missing_ok=True)
+                temporary.unlink(missing_ok=True)
             except OSError:
                 pass
             raise KnowledgeError(f"could not store the file: {exc}") from exc
@@ -794,6 +808,108 @@ def chunk_text(text: str, target_tokens: int = 360, overlap_tokens: int = 60) ->
         if body and (not chunks or chunks[-1]["text"] != body):
             chunks.append({"heading": heading[:200], "text": body})
     return chunks[:MAX_CHUNKS_PER_DOC]
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _open_text(path: Path):
+    try:
+        return open(path, "r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise KnowledgeError(f"could not read the file: {exc}") from exc
+
+
+def extract_text_path(path: Path, *, docling_path: str = "") -> str:
+    """Extract text without loading text/JSONL/CSV files into memory."""
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _pdf_text(path, docling_path=docling_path)
+    if suffix in (".jsonl", ".ndjson"):
+        return _jsonl_path(path)
+    if suffix in (".csv", ".tsv"):
+        return _csv_path(path, delimiter="\t" if suffix == ".tsv" else ",")
+    if suffix in (".txt", ".md", ".markdown", ".rst"):
+        return _plain_path(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise KnowledgeError(f"could not read the file: {exc}") from exc
+    return extract_text(path, raw, docling_path=docling_path)
+
+
+def _plain_path(path: Path) -> str:
+    parts: list[str] = []
+    total = 0
+    with _open_text(path) as handle:
+        while total < MAX_TEXT_CHARS:
+            chunk = handle.read(256 * 1024)
+            if not chunk:
+                break
+            remaining = MAX_TEXT_CHARS - total
+            parts.append(chunk[:remaining])
+            total += min(len(chunk), remaining)
+    text = "".join(parts)
+    return re.sub(r"\r\n?", "\n", text)
+
+
+def _jsonl_path(path: Path) -> str:
+    out: list[str] = []
+    total = 0
+    seen = 0
+    columns: list[str] = []
+    with _open_text(path) as handle:
+        for line in handle:
+            if seen >= MAX_JSONL_LINES:
+                out.append(f"… truncated after {MAX_JSONL_LINES} records")
+                break
+            line = line.strip()
+            if not line:
+                continue
+            seen += 1
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                rendered = line
+            else:
+                if isinstance(obj, dict):
+                    if not columns:
+                        columns = [str(k) for k in list(obj.keys())[:60]]
+                    rendered = " | ".join(
+                        f"{k}: {v}" for k, v in list(obj.items())[:60]
+                    )
+                else:
+                    rendered = str(obj)
+            entry = f"Record {seen}: {rendered}"
+            out.append(entry)
+            total += len(entry) + 1
+            if total >= MAX_TEXT_CHARS:
+                out.append("… truncated at the text budget")
+                break
+    return "\n".join(out)[:MAX_TEXT_CHARS]
+
+
+def _csv_path(path: Path, delimiter: str) -> str:
+    out: list[str] = []
+    total = 0
+    with _open_text(path) as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        for index, row in enumerate(reader):
+            if index >= MAX_JSONL_LINES:
+                out.append(f"… truncated after {MAX_JSONL_LINES} rows")
+                break
+            line = " | ".join(str(cell)[:500] for cell in row[:40])
+            out.append(line)
+            total += len(line) + 1
+            if total >= MAX_TEXT_CHARS:
+                out.append("… truncated at the text budget")
+                break
+    return "\n".join(out)[:MAX_TEXT_CHARS]
 
 
 def extract_text(path: Path, raw: bytes, *, docling_path: str = "") -> str:

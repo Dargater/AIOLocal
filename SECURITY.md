@@ -6,7 +6,7 @@ guarantees are not overstated.
 
 ## Supported version
 
-Only the current release (v0.1.x) is supported.
+Only the current release (v0.2.x) is supported.
 
 ## How to report a problem
 

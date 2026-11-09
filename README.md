@@ -3,12 +3,13 @@
 **A local, memory-first AI workspace for Intel laptops.** Chat, image generation, model
 management, and a transparent long-term memory system — all on `127.0.0.1`, with no cloud calls.
 
-This is **v0.1.0**, a deliberately small but real vertical slice. It is not the finished product
-described in `PLAN/`. What exists is listed below; what does not exist is listed just as plainly.
+This is **v0.2.0**, the first public release. It is a real, working product: chat, memory,
+a knowledge/reference library, local image generation, a GIMP dock, and a source-build path
+for Linux. What exists is listed below; what does not exist is listed just as plainly.
 
 ---
 
-## What works in v0.1
+## What works in v0.2
 
 | Area | Status |
 |---|---|
@@ -17,29 +18,34 @@ described in `PLAN/`. What exists is listed below; what does not exist is listed
 | Exact memory DB (append-only, deduplicated, SQLite WAL) | ✅ |
 | Summary memory + topics + many-to-many links | ✅ |
 | Hybrid retrieval (BM25 + local hashed embeddings + reciprocal rank fusion) | ✅ |
+| Optional OVMS semantic embeddings fused with hash retrieval, with re-embed job | ✅ |
+| Optional LLM filing with deterministic heuristic fallback | ✅ |
 | Token-budgeted prompt assembly with the documented trim order | ✅ |
-| Background memory filing with validation and `unsorted` fallback | ✅ |
 | Memory Inspector (see exactly what the model saw) | ✅ |
 | Model catalog, device choice, load/unload via OVMS config reload | ✅ |
 | Image generation/edit proxy + local gallery | ✅ |
 | Image attachments to a vision chat model (Qwen3-VL 4B) | ✅ |
+| PDF chat attachments: every page rendered and analysed in 3-page vision batches into one durable memory entry | ✅ |
 | Offline math rendering (bundled KaTeX) and PDF text extraction (pypdf) | ✅ |
 | Local-only security: loopback bind, per-install token, origin/host checks, CSP | ✅ |
-| Windows build (PyInstaller onedir) | ✅ |
-| Documents / Knowledge RAG (separate DB, FTS5 + vectors, inbox, upload isolation) | ✅ v1 |
-| Code workspace (OpenCode lifecycle + workspace preview) | ✅ v1 |
-| Reverse engineering (REA MCP stdio client, tool console, lifecycle) | ✅ v1 |
-| Embedded GIMP dock (Win32 host + embed + external fallback) | ✅ v1 |
+| Windows build (PyInstaller onedir) and Linux source build | ✅ |
+| Independent Knowledge library (separate DB, FTS5 + vectors, inbox, upload isolation, opt-in per message) | ✅ |
+| Code workspace (OpenCode lifecycle + workspace preview) | ✅ |
+| Reverse engineering (REA MCP stdio client, tool console, lifecycle) | ✅ |
+| Embedded GIMP dock (Win32 host + embed + external fallback) | ✅ |
+| GIMP diagnostics: log capture, plugin port/weight checks, model-list repair | ✅ |
+| Optional PhotoGIMP installer from the official GPL-3.0 release (Windows) | ✅ |
 | Audio / video | ⛔ planned (v2 — Stable Diffusion-class model for 16 GB) |
 
-The UI groups Documents, Code, Reverse engineering and GIMP under **Workspace** because they are
-real v1 views. Only **Audio & video** is under **Planned modules**.
+The UI groups Knowledge, Code, Reverse engineering and GIMP under **Workspace** because they are
+real views. Only **Audio & video** is under **Planned modules**.
 
 ---
 
 ## Requirements
 
 - Windows 10/11 x64, 8 GB RAM minimum (16 GB recommended for the 9B model).
+- Linux x86_64 is supported as a **source build** (Python 3.11+). Only Windows binaries are published.
 - **App bundle** includes server, UI, memory, KB, web search, image proxy, and the GIMP/REA/OpenCode lifecycle managers. It does **not** include OVMS/GIMP/REA/OpenCode binaries or model weights (those are GB-scale/externally licensed).
 - **Automatic setup**: every launch checks the six runtime components (OVMS, portable Node.js, OpenCode, private Python, GIMP 3, Intel OpenVINO GIMP plugin). The Setup page downloads, verifies and unpacks anything missing into app-owned folders under the data directory, with per-component progress and logs. No system-wide install is required.
 - **Automatic hosting**: the app can start/stop/reload its own server (`uvicorn`), manage the GIMP dock (`Win32 SetParent`), and launch REA (`npx -y rea-agents mcp`) when the user presses Start. Settings allow custom executable paths.
@@ -66,6 +72,41 @@ python -m aiolocal --no-browser --port 7317
 ```
 
 Then open <http://127.0.0.1:7317>.
+
+### Linux source build
+
+There is no Linux binary release. Build from source on Linux x86_64:
+
+```bash
+git clone <your-repository-url> aiolocal
+cd aiolocal
+chmod +x packaging/run-linux.sh
+./packaging/run-linux.sh
+```
+
+Or manually:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[dev]"
+python -m aiolocal --no-browser --port 7317
+```
+
+Install the external pieces with your distribution instead of the Windows Setup
+downloaders:
+
+- **OVMS**: install the Intel OpenVINO Model Server package or container, then point
+  **Settings → Upstream URL** at it. The app does not ship a Linux OVMS binary.
+- **Node / OpenCode**: install Node 20+ and OpenCode with your package manager; set
+  their paths in Settings if they are not on `PATH`.
+- **GIMP**: install GIMP 3. The Intel OpenVINO GIMP plugin is Windows-oriented; on Linux,
+  install it manually into your own GIMP profile. GIMP launches in its own window on
+  Linux (the Win32 dock is Windows-only).
+- **PhotoGIMP**: use the official manual instructions from
+  <https://github.com/Diolinux/PhotoGIMP>; the managed installer is Windows-only.
+
+Data lives under `~/.local/share/AIOLocal/` (or `$XDG_DATA_HOME/AIOLocal`).
 
 ### First-launch setup
 
@@ -115,7 +156,8 @@ and tool folders, then the Setup page installs anything the machine is missing.
 
 ## Data and privacy
 
-Everything lives in `%LOCALAPPDATA%\AIOLocal\`:
+Everything lives in `%LOCALAPPDATA%\AIOLocal\` on Windows and
+`~/.local/share/AIOLocal/` on Linux:
 
 ```
 config\app.json      settings (no secrets)
@@ -173,7 +215,9 @@ aiolocal/
   models.py          OVMS catalog, config generation, load/unload
   images.py          image proxy and gallery
   events.py          server-sent events
-  memory/            text, store, retrieve, assemble, filing, jobs
+  memory/            text, store, retrieve, assemble, filing, jobs, semantic
+  documents.py       PDF pages -> vision model -> durable document memory
+  photogimp.py       optional PhotoGIMP manager (Windows)
   web/               no-build HTML/CSS/JS UI
 tests/               unit + integration tests (fake upstream, no GPU needed)
 packaging/           PyInstaller spec and build script

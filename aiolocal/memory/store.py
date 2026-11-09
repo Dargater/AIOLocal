@@ -264,6 +264,31 @@ def insert_summary(
     return summary_id
 
 
+def update_summary_body(
+    db: Database,
+    summary_id: str,
+    body: str,
+    *,
+    title: str | None = None,
+    embed_dim: int = 256,
+) -> bool:
+    """Replace (or append to) a summary body, used by incremental document jobs."""
+    with db.write() as c:
+        row = c.execute(
+            "SELECT title, body FROM summaries WHERE id=? AND merged_into IS NULL",
+            (summary_id,),
+        ).fetchone()
+        if not row:
+            return False
+        c.execute(
+            "UPDATE summaries SET body=?, title=?, updated_at=? WHERE id=?",
+            (body[:24_000], (title or row["title"])[:200], now_ms(), summary_id),
+        )
+    current_title = title or row["title"]
+    put_embedding(db, "summary", summary_id, "hash", embed(current_title + "\n" + body[:8000], embed_dim))
+    return True
+
+
 def merge_summary(db: Database, summary_id: str, body: str, message_ids: Iterable[str]) -> bool:
     with db.write() as c:
         row = c.execute("SELECT id FROM summaries WHERE id=? AND merged_into IS NULL",

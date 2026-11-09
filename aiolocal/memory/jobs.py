@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import filing, store
+from . import filing, semantic, store
 from .text import cosine
 
 from ..config import Settings
@@ -90,6 +90,11 @@ class MemoryWorker:
         self.notify()
         return job_id
 
+    def enqueue_reembed(self, limit: int = 5000) -> str:
+        job_id = store.queue_job(self.db, "reembed", {"limit": int(limit)})
+        self.notify()
+        return job_id
+
     def run_once(self) -> bool:
         job = store.claim_job(self.db)
         if not job:
@@ -110,19 +115,35 @@ class MemoryWorker:
 
     def _dispatch(self, kind: str, payload: dict) -> None:
         if kind == "file_turn":
-            filing.heuristic_file_turn(
-                self.db,
-                conversation_id=payload["conversation_id"],
-                user_message_id=payload["user_message_id"],
-                assistant_message_id=payload["assistant_message_id"],
-                user_text=payload.get("user_text") or "",
-                assistant_text=payload.get("assistant_text") or "",
-                settings=self.settings,
-            )
+            filed = None
+            if self.settings.filing_model:
+                filed = filing.model_file_turn(
+                    self.db,
+                    conversation_id=payload["conversation_id"],
+                    user_message_id=payload["user_message_id"],
+                    assistant_message_id=payload["assistant_message_id"],
+                    user_text=payload.get("user_text") or "",
+                    assistant_text=payload.get("assistant_text") or "",
+                    settings=self.settings,
+                )
+            if not filed:
+                filing.heuristic_file_turn(
+                    self.db,
+                    conversation_id=payload["conversation_id"],
+                    user_message_id=payload["user_message_id"],
+                    assistant_message_id=payload["assistant_message_id"],
+                    user_text=payload.get("user_text") or "",
+                    assistant_text=payload.get("assistant_text") or "",
+                    settings=self.settings,
+                )
         elif kind == "consolidate":
             consolidate(self.db, embed_dim=self.settings.embed_dim)
         elif kind == "reindex":
             rebuild_fts(self.db)
+        elif kind == "reembed":
+            semantic.reembed_all(
+                self.db, self.settings, limit=int(payload.get("limit", 5000))
+            )
         else:
             raise ValueError(f"unknown job kind: {kind}")
 

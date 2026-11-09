@@ -7,10 +7,12 @@ needing the control API.
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import shutil
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -204,6 +206,30 @@ async def consolidate_now(request: Request):
     return {"ok": True, "job": job_id}
 
 
+@router.post("/memory/reembed")
+async def memory_reembed(request: Request, limit: int = 5000):
+    """Queue semantic re-embedding of existing memory with the configured model."""
+    ctx: AppContext = request.app.state.ctx
+    from .memory import semantic
+
+    if not semantic.enabled(ctx.settings):
+        return _err(
+            400,
+            "Semantic embeddings are off. Choose the OVMS embedding backend in Settings first.",
+            "semantic_disabled",
+        )
+    if ctx.worker:
+        job_id = ctx.worker.enqueue_reembed(limit)
+    else:
+        job_id = store.queue_job(ctx.db, "reembed", {"limit": int(limit)})
+    return {
+        "ok": True,
+        "job": job_id,
+        "model": semantic.model_name(ctx.settings),
+        "limit": max(1, min(int(limit), 50_000)),
+    }
+
+
 @router.get("/inspector/{request_id}")
 async def inspector(request_id: str, request: Request):
     ctx: AppContext = request.app.state.ctx
@@ -386,33 +412,70 @@ async def knowledge_document_delete(document_id: str, request: Request):
 
 @router.post("/knowledge/upload")
 async def knowledge_upload(request: Request, collection: str = "general", filename: str = ""):
-    """Raw-body upload, so the app needs no multipart dependency.
+    """Stream a raw-body upload straight to disk.
 
     The browser sends the bytes with ``Content-Type: application/octet-stream`` and
-    passes the original filename in the query string. The knowledge base sanitises
-    the name and writes only inside its managed folder.
+    passes the original filename in the query string. Nothing is buffered in memory,
+    so a 400 MB JSONL dataset works exactly like a small Markdown file.
     """
     ctx: AppContext = request.app.state.ctx
     if not ctx.kb:
         return _kb_unavailable()
-    data = await request.body()
-    if not data:
-        return _err(400, "the uploaded file is empty", "empty_file")
+    from .knowledge import MAX_FILE_BYTES, KnowledgeError
+
+    try:
+        temporary, target, slug = ctx.kb.upload_target(
+            filename or "upload.txt", collection or "general"
+        )
+    except KnowledgeError as exc:
+        return _err(400, str(exc), "invalid_file")
+    received = 0
+    try:
+        with open(temporary, "wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > MAX_FILE_BYTES:
+                    raise KnowledgeError(
+                        f"file is too large (max {MAX_FILE_BYTES // (1024*1024)} MB)"
+                    )
+                handle.write(chunk)
+        if received == 0:
+            raise KnowledgeError("the uploaded file is empty")
+        os.replace(temporary, target)
+    except KnowledgeError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _err(400, str(exc), "invalid_file")
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _err(500, f"could not store the upload: {exc}", "upload_failed")
+
     try:
         from starlette.concurrency import run_in_threadpool
 
         result = await run_in_threadpool(
-            ctx.kb.import_bytes,
-            data,
-            filename or "upload.txt",
-            collection or "general",
+            ctx.kb.ingest_path,
+            target,
+            slug,
             embed_dim=ctx.settings.embed_dim,
             docling_path=ctx.settings.docling_path,
         )
     except Exception as exc:
         return _err(400, f"could not import the document: {exc}", "import_failed")
     ctx.bus.publish("knowledge_document", {"state": "added", "document": result})
-    return {"ok": True, "document": result, "stats": ctx.kb.stats()}
+    return {
+        "ok": True,
+        "document": result,
+        "bytes": received,
+        "stats": ctx.kb.stats(),
+    }
 
 
 @router.post("/knowledge/search")
@@ -715,6 +778,151 @@ async def gimp_open(request: Request):
         return ctx.gimp.open_image(image_id)
     except Exception as exc:
         return _err(400, str(exc), "gimp_error")
+
+
+@router.post("/gimp/repair")
+async def gimp_repair(request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.gimp:
+        return _err(503, "the GIMP dock is not available", "gimp_unavailable")
+    from starlette.concurrency import run_in_threadpool
+
+    return await run_in_threadpool(ctx.gimp.repair)
+
+
+@router.get("/gimp/photogimp")
+async def photogimp_status(request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.gimp:
+        return _err(503, "the GIMP dock is not available", "gimp_unavailable")
+    from .photogimp import PhotoGIMP
+
+    return PhotoGIMP(ctx.paths, ctx.gimp).status()
+
+
+@router.post("/gimp/photogimp/install")
+async def photogimp_install(request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.gimp:
+        return _err(503, "the GIMP dock is not available", "gimp_unavailable")
+    from starlette.concurrency import run_in_threadpool
+
+    from .photogimp import PhotoGIMP, PhotoGimpError
+
+    try:
+        result = await run_in_threadpool(PhotoGIMP(ctx.paths, ctx.gimp).install)
+    except PhotoGimpError as exc:
+        return _err(400, str(exc), "photogimp_error")
+    except Exception as exc:
+        return _err(500, f"could not install PhotoGIMP: {exc}", "photogimp_error")
+    ctx.bus.publish("gimp_status", {"photogimp": "installed"})
+    return result
+
+
+@router.post("/gimp/photogimp/remove")
+async def photogimp_remove(request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.gimp:
+        return _err(503, "the GIMP dock is not available", "gimp_unavailable")
+    from starlette.concurrency import run_in_threadpool
+
+    from .photogimp import PhotoGIMP
+
+    try:
+        result = await run_in_threadpool(PhotoGIMP(ctx.paths, ctx.gimp).remove)
+    except Exception as exc:
+        return _err(500, f"could not remove PhotoGIMP: {exc}", "photogimp_error")
+    ctx.bus.publish("gimp_status", {"photogimp": "removed"})
+    return result
+
+
+# ------------------------------------------------------------------------- documents
+MAX_DOCUMENT_BYTES = 512 * 1024 * 1024
+
+
+def _documents_unavailable():
+    return _err(503, "document analysis is not available", "documents_unavailable")
+
+
+@router.get("/documents/jobs")
+async def document_jobs(request: Request, limit: int = 20):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.documents:
+        return _documents_unavailable()
+    return {"data": ctx.documents.recent(limit=limit)}
+
+
+@router.get("/documents/jobs/{job_id}")
+async def document_job(job_id: str, request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.documents:
+        return _documents_unavailable()
+    job = ctx.documents.get(job_id)
+    if not job:
+        return _err(404, "document job not found", "not_found")
+    return job
+
+
+@router.post("/documents/jobs/{job_id}/cancel")
+async def document_job_cancel(job_id: str, request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.documents:
+        return _documents_unavailable()
+    if not ctx.documents.cancel(job_id):
+        return _err(404, "document job not found", "not_found")
+    return {"ok": True}
+
+
+@router.post("/documents/analyze")
+async def document_analyze(request: Request, filename: str = ""):
+    """Stream a PDF upload to disk, then analyse every page with the vision model."""
+    ctx: AppContext = request.app.state.ctx
+    if not ctx.documents:
+        return _documents_unavailable()
+    from .documents import DocumentError
+
+    name = Path(str(filename or "document.pdf")).name[:180] or "document.pdf"
+    if Path(name).suffix.lower() != ".pdf":
+        return _err(400, "only PDF files can be analysed page by page", "invalid_file")
+    target = ctx.documents.dir / f"{time.time_ns()}-{re.sub(r'[^A-Za-z0-9._-]+', '_', name)}"
+    temporary = target.with_suffix(target.suffix + ".part")
+    received = 0
+    try:
+        with open(temporary, "wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > MAX_DOCUMENT_BYTES:
+                    raise DocumentError(
+                        f"the PDF is too large (max {MAX_DOCUMENT_BYTES // (1024 * 1024)} MB)"
+                    )
+                handle.write(chunk)
+        if received == 0:
+            raise DocumentError("the uploaded PDF is empty")
+        os.replace(temporary, target)
+    except DocumentError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _err(400, str(exc), "invalid_file")
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _err(500, f"could not store the upload: {exc}", "upload_failed")
+
+    try:
+        from starlette.concurrency import run_in_threadpool
+
+        job = await run_in_threadpool(ctx.documents.start, target, name)
+    except DocumentError as exc:
+        return _err(400, str(exc), "document_error")
+    except Exception as exc:
+        return _err(500, f"could not start the document job: {exc}", "document_error")
+    return {"ok": True, "job": job, "bytes": received}
 
 
 # ------------------------------------------------------------------------- web search

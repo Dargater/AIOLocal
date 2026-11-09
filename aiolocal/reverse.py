@@ -87,7 +87,7 @@ class MCPClient:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "aiolocal", "version": "0.1.0"},
+                "clientInfo": {"name": "aiolocal", "version": "0.2.0"},
             },
             timeout=timeout,
         )
@@ -438,4 +438,27 @@ class ReverseEngineering:
         client = self.client
         if not client or not client.running():
             raise MCPError("REA is not running")
+        arguments = normalise_tool_arguments(name, arguments)
         return client.call_tool(name, arguments)
+
+
+def normalise_tool_arguments(name: str, arguments: dict) -> dict:
+    """Fix a common REA mistake before it reaches the tool.
+
+    ``inspect_desktop_application`` wants the application *folder* (the artifact
+    root), but the UI example and most users naturally pass the .exe. REA rejects
+    that with ``Artifact root must be a directory``. Converting a file path to its
+    parent is unambiguous for this tool and leaves every other tool untouched.
+    """
+    if name != "inspect_desktop_application" or not isinstance(arguments, dict):
+        return arguments
+    for key in ("path", "artifact_root", "app_path", "target"):
+        value = arguments.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = Path(value.strip().strip('"')).expanduser()
+        if candidate.is_file():
+            fixed = dict(arguments)
+            fixed[key] = str(candidate.parent)
+            return fixed
+    return arguments

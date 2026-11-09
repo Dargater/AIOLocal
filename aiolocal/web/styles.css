@@ -41,7 +41,13 @@ a { color: var(--accent); }
   padding: 22px 16px; border-right: 1px solid var(--line-soft);
   background: linear-gradient(180deg, rgba(16, 24, 33, 0.9), rgba(10, 14, 19, 0.65));
   position: sticky; top: 0; height: 100vh;
+  overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.brand, .nav, .nav-section, .sidebar-foot { flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 6px 4px; }
 .brand-mark {
   width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;

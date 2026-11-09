@@ -22,6 +22,7 @@ from .security import SecretStore
 from .code import CodeWorkspace
 from .reverse import ReverseEngineering
 from .gimp import GimpDock
+from .documents import DocumentAnalyzer
 from .requirements import RequirementsManager
 
 
@@ -44,6 +45,7 @@ class AppContext:
     code_ws: CodeWorkspace | None = None
     reverse: ReverseEngineering | None = None
     gimp: GimpDock | None = None
+    documents: DocumentAnalyzer | None = None
     requirements: RequirementsManager | None = None
 
     def update_settings(self, settings: Settings) -> None:
@@ -81,6 +83,11 @@ class AppContext:
         if self.gimp is not None:
             try:
                 self.gimp.shutdown()
+            except Exception:
+                pass
+        if self.documents is not None:
+            try:
+                self.documents.close()
             except Exception:
                 pass
         self.db.close()

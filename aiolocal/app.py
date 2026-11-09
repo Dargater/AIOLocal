@@ -30,11 +30,18 @@ from .security import host_allowed, origin_allowed, tokens_equal, SecretStore
 from .code import CodeWorkspace
 from .reverse import ReverseEngineering
 from .gimp import GimpDock
+from .documents import DocumentAnalyzer
 from .requirements import RequirementsManager
 
 log = logging.getLogger("aiolocal.app")
 
 MAX_BODY_BYTES = 48 * 1024 * 1024
+# Large, explicitly user-started imports (a dataset/PDF) stream to disk instead of
+# being buffered in memory. Everything else keeps the small default limit.
+LARGE_BODY_PATHS = {
+    "/api/v1/knowledge/upload": 2 * 1024 * 1024 * 1024,
+    "/api/v1/documents/analyze": 512 * 1024 * 1024,
+}
 
 CSP = (
     "default-src 'none'; "
@@ -123,6 +130,7 @@ def create_app(
             return path
 
         gimp = GimpDock(paths, settings_store, image_lookup=lookup_image)
+        documents = DocumentAnalyzer(paths, settings_store, db, publish=bus.publish)
         ctx = AppContext(
             paths=paths,
             settings_store=settings_store,
@@ -140,6 +148,7 @@ def create_app(
             code_ws=code_ws,
             reverse=reverse,
             gimp=gimp,
+            documents=documents,
             requirements=requirements,
         )
         app.state.ctx = ctx
@@ -195,6 +204,10 @@ def create_app(
             except Exception:
                 log.exception("failed to release the GIMP dock")
             try:
+                documents.close()
+            except Exception:
+                log.exception("failed to stop document jobs")
+            try:
                 models.stop_ovms()
             except Exception:
                 log.exception("failed to stop OVMS")
@@ -238,11 +251,21 @@ def create_app(
             )
 
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={"error": {"message": "request body is too large", "code": "too_large"}},
-            )
+        if length and length.isdigit():
+            limit = LARGE_BODY_PATHS.get(path, MAX_BODY_BYTES)
+            if int(length) > limit:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": {
+                            "message": (
+                                f"request body is too large ({int(length) // (1024*1024)} MB; "
+                                f"max {limit // (1024*1024)} MB)"
+                            ),
+                            "code": "too_large",
+                        }
+                    },
+                )
 
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import store
+from . import store, semantic
 from .text import embed, estimate_tokens, keywords, normalise
 
 from ..config import Settings
@@ -141,8 +141,14 @@ def _vector_rank(
     if not pairs:
         return []
     qv = embed(query, dim)
+    return _rank_pairs(qv, pairs, threshold, limit)
+
+
+def _rank_pairs(
+    qv: np.ndarray, pairs: list[tuple[str, np.ndarray]], threshold: float, limit: int
+) -> list[str]:
     qnorm = float(np.linalg.norm(qv))
-    if qnorm == 0:
+    if qnorm == 0 or not pairs:
         return []
     matrix = np.vstack([vec for _, vec in pairs])
     norms = np.linalg.norm(matrix, axis=1)
@@ -152,14 +158,57 @@ def _vector_rank(
     return [pairs[i][0] for i in order if float(sims[i]) > threshold]
 
 
-def _vector_summaries(db: Database, query: str, dim: int, limit: int = 40) -> list[str]:
-    rows = store.get_embeddings(db, "summary", "hash", limit=50_000)
-    return _vector_rank(query, rows, dim, 0.02, limit)
+def _vector_summaries(db: Database, query: str, settings: Settings, limit: int = 40) -> list[str]:
+    return _vector_lists(
+        db, "summary", query, settings, threshold=0.02, limit=limit, cap=50_000
+    )
 
 
-def _vector_messages(db: Database, query: str, dim: int, limit: int = 30) -> list[str]:
-    rows = store.get_embeddings(db, "message", "hash", limit=20_000)
-    return _vector_rank(query, rows, dim, 0.10, limit)
+def _vector_messages(db: Database, query: str, settings: Settings, limit: int = 30) -> list[str]:
+    return _vector_lists(
+        db, "message", query, settings, threshold=0.10, limit=limit, cap=20_000
+    )
+
+
+def _vector_lists(
+    db: Database,
+    owner_type: str,
+    query: str,
+    settings: Settings,
+    *,
+    threshold: float,
+    limit: int,
+    cap: int,
+) -> list[str]:
+    """Fuse semantic vectors (when configured) with the always-present hash vectors."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(ids: list[str]) -> None:
+        for owner_id in ids:
+            if owner_id not in seen:
+                seen.add(owner_id)
+                out.append(owner_id)
+
+    semantic_model = semantic.model_name(settings)
+    if semantic_model != "hash":
+        try:
+            rows = store.get_embeddings(db, owner_type, semantic_model, limit=cap)
+            if rows:
+                vector = semantic.embed_text(settings, query)
+                if vector is not None and vector.size:
+                    pairs = [(owner_id, np.asarray(vec, dtype=np.float32)) for owner_id, vec in rows]
+                    pairs = [(owner_id, vec) for owner_id, vec in pairs if vec.size == vector.size]
+                    add(_rank_pairs(vector, pairs, threshold, limit))
+        except Exception:
+            pass
+
+    try:
+        rows = store.get_embeddings(db, owner_type, "hash", limit=cap)
+        add(_vector_rank(query, rows, settings.embed_dim, threshold, limit))
+    except Exception:
+        pass
+    return out[:limit]
 
 
 def _rrf(lists: list[list[str]]) -> dict[str, float]:
@@ -256,7 +305,7 @@ def retrieve(
     lists: list[list[str]] = []
 
     try:
-        vec_ids = _vector_summaries(db, q, settings.embed_dim)
+        vec_ids = _vector_summaries(db, q, settings)
         lists.append(vec_ids)
         plan["sources"]["summary_vector"] = vec_ids[:10]
     except Exception as exc:  # pragma: no cover - defensive
@@ -289,7 +338,7 @@ def retrieve(
         topic_ids = []
 
     try:
-        vec_msg = [m for m in _vector_messages(db, q, settings.embed_dim) if m not in exclude]
+        vec_msg = [m for m in _vector_messages(db, q, settings) if m not in exclude]
         lists.append(vec_msg)
         plan["sources"]["message_vector"] = vec_msg[:10]
     except Exception as exc:  # pragma: no cover
