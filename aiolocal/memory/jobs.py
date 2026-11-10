@@ -141,9 +141,13 @@ class MemoryWorker:
         elif kind == "reindex":
             rebuild_fts(self.db)
         elif kind == "reembed":
-            semantic.reembed_all(
+            result = semantic.reembed_all(
                 self.db, self.settings, limit=int(payload.get("limit", 5000))
             )
+            # A partial run is fine (hash retrieval still works), but a run that
+            # indexed nothing must be visible as a failed job instead of "done".
+            if result.get("error") and not result.get("summaries") and not result.get("messages"):
+                raise RuntimeError(result["error"])
         else:
             raise ValueError(f"unknown job kind: {kind}")
 

@@ -7,6 +7,7 @@ needing the control API.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import re
@@ -132,6 +133,16 @@ async def conversation_messages(conversation_id: str, request: Request):
     return {"data": store.conversation_messages(ctx.db, conversation_id, limit=1000)}
 
 
+@router.delete("/conversations/{conversation_id}")
+async def conversation_delete(conversation_id: str, request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not valid_id(conversation_id):
+        return _err(400, "invalid conversation id", "invalid_id")
+    if not store.delete_conversation(ctx.db, conversation_id):
+        return _err(404, "conversation not found", "not_found")
+    return {"ok": True, "deleted": conversation_id}
+
+
 # ------------------------------------------------------------------------- memory
 @router.get("/memory/summaries")
 async def summaries(request: Request, limit: int = 50, offset: int = 0, topic: str | None = None):
@@ -156,6 +167,16 @@ async def summary_detail(summary_id: str, request: Request):
     message_ids = store.summary_message_ids(ctx.db, summary_id, limit=50)
     messages = store.messages_by_ids(ctx.db, message_ids)
     return {"summary": summary, "messages": messages}
+
+
+@router.delete("/memory/summaries/{summary_id}")
+async def summary_delete(summary_id: str, request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not valid_id(summary_id):
+        return _err(400, "invalid summary id", "invalid_id")
+    if not store.delete_summary(ctx.db, summary_id):
+        return _err(404, "summary not found", "not_found")
+    return {"ok": True, "deleted": summary_id}
 
 
 @router.get("/memory/topics")
@@ -263,13 +284,72 @@ async def load_model(model_id: str, request: Request):
     except Exception:
         body = {}
     device = str((body or {}).get("device") or "").upper()
+    entry = next((m for m in CATALOG if m["id"] == model_id), None)
+    candidates = [device]
+    if entry:
+        for fallback in entry.get("fallback_devices") or []:
+            fallback = str(fallback).upper()
+            if fallback and fallback not in candidates:
+                candidates.append(fallback)
     try:
         result = ctx.models.load(model_id, device)
     except ValueError as exc:
         return _err(400, str(exc), "model_error")
-    ok, message = await ctx.models.reload(ctx.upstream)
-    ctx.bus.publish("model_loaded", {"model": model_id, "device": device})
-    return {**result, "reload": {"ok": ok, "message": message}}
+
+    last_reload: dict = {}
+    requested = result.get("device", device)
+    verify = bool(entry and entry.get("fallback_devices"))
+    for candidate in candidates:
+        if candidate != requested:
+            try:
+                result = ctx.models.load(model_id, candidate)
+            except ValueError as exc:
+                last_reload = {"ok": False, "message": str(exc)}
+                continue
+        ok, message = await ctx.models.reload(ctx.upstream)
+        last_reload = {"ok": ok, "message": message}
+        if not ok:
+            continue
+        if not verify:
+            result["verified"] = True
+            result["reload"] = last_reload
+            break
+        # OVMS reload returns 200 even when a graph fails to initialise. Wait for
+        # the model to appear in /v1/models before declaring success.
+        loaded = await _wait_for_model(ctx, model_id, timeout=35.0 if candidate == requested else 45.0)
+        result["verified"] = loaded
+        if loaded:
+            result["reload"] = last_reload
+            if candidate != requested:
+                result["fallback"] = {
+                    "from": requested,
+                    "to": candidate,
+                    "reason": f"{requested} did not become available; loaded on {candidate} instead.",
+                }
+                result["message"] = result["fallback"]["reason"]
+            break
+    result["reload"] = last_reload
+    if not result.get("verified") and entry and entry.get("fallback_devices"):
+        result["message"] = (
+            f"{model_id} did not become available on {requested} or its fallback devices. "
+            "Check the OVMS log for the compilation error."
+        )
+    ctx.bus.publish(
+        "model_loaded",
+        {"model": model_id, "device": result.get("device", requested), "fallback": result.get("fallback")},
+    )
+    return result
+
+
+async def _wait_for_model(ctx: AppContext, model_id: str, *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        health = await ctx.upstream.health()
+        if health.get("ok") and model_id in (health.get("models") or []):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.75)
 
 
 @router.post("/models/{model_id}/unload")

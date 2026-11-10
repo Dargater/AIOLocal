@@ -95,6 +95,14 @@ def _render_system(
         parts.append("\n" + MEDICAL_DISCLAIMER)
 
     if items:
+        has_document = any(i.summary_kind == "document" for i in items)
+        if has_document:
+            parts.append(
+                "\n\nDOCUMENT MEMORY: The document notes below were produced by reading the "
+                "attached PDF page by page with the vision model. Treat them as the document "
+                "contents. Answer from them and do not claim you cannot see or read the "
+                "document when its notes are present.\n"
+            )
         parts.append("\n\n## What you remember (retrieved)\n")
         for item in items:
             if item.kind == "summary":
@@ -140,7 +148,13 @@ def _trim_history(history: list[dict], budget: int) -> tuple[list[dict], int]:
     return kept, used
 
 
-def _trim_items(items: list[MemoryItem], budget: int, newest_first: bool) -> tuple[list[MemoryItem], int]:
+def _trim_items(
+    items: list[MemoryItem],
+    budget: int,
+    newest_first: bool,
+    *,
+    keep_top: bool = False,
+) -> tuple[list[MemoryItem], int]:
     ordered = sorted(
         items,
         key=(lambda i: i.created_at) if newest_first else (lambda i: i.score),
@@ -148,7 +162,23 @@ def _trim_items(items: list[MemoryItem], budget: int, newest_first: bool) -> tup
     )
     kept: list[MemoryItem] = []
     used = 0
-    for item in ordered:
+    remaining = ordered
+    if keep_top and ordered:
+        # The highest-ranked item must survive. If it is larger than the whole
+        # budget, truncate it rather than skipping it and answering without the
+        # one memory the query actually matched (usually a document summary).
+        item = ordered[0]
+        cost = item.tokens or estimate_tokens(item.body)
+        if cost > budget:
+            allowed = max(1, budget)
+            text = truncate_tokens(item.body, max(1, allowed - estimate_tokens(item.title)))
+            item = _clone_item(item, text)
+            cost = item.tokens
+        if cost <= budget:
+            kept.append(item)
+            used = cost
+        remaining = ordered[1:]
+    for item in remaining:
         cost = item.tokens or estimate_tokens(item.body)
         if used + cost > budget:
             continue
@@ -158,21 +188,26 @@ def _trim_items(items: list[MemoryItem], budget: int, newest_first: bool) -> tup
         item = ordered[0]
         allowed = max(1, budget)
         text = truncate_tokens(item.body, max(1, allowed - estimate_tokens(item.title)))
-        clone = MemoryItem(
-            kind=item.kind,
-            id=item.id,
-            title=item.title,
-            body=text,
-            score=item.score,
-            topic=item.topic,
-            message_ids=item.message_ids,
-            created_at=item.created_at,
-            salience=item.salience,
-            tokens=estimate_tokens(text),
-        )
+        clone = _clone_item(item, text)
         kept = [clone]
         used = clone.tokens
     return kept, used
+
+
+def _clone_item(item: MemoryItem, text: str) -> MemoryItem:
+    return MemoryItem(
+        kind=item.kind,
+        id=item.id,
+        title=item.title,
+        body=text,
+        score=item.score,
+        topic=item.topic,
+        message_ids=item.message_ids,
+        created_at=item.created_at,
+        salience=item.salience,
+        tokens=estimate_tokens(text),
+        summary_kind=item.summary_kind,
+    )
 
 
 def assemble(
@@ -211,9 +246,25 @@ def assemble(
 
     summaries = [i for i in items if i.kind == "summary"]
     exact = [i for i in items if i.kind == "exact"]
+    documents = [i for i in summaries if i.summary_kind == "document"]
+    other_summaries = [i for i in summaries if i.summary_kind != "document"]
+
+    # Document summaries are the complete analysis of a PDF the user attached.
+    # They are large and must not be crowded out by incidental exact excerpts, so
+    # they get their own guaranteed slice before the ordinary summaries.
+    chosen_documents: list[MemoryItem] = []
+    document_used = 0
+    if documents:
+        document_budget = min(int(available * 0.55), max(0, remaining))
+        chosen_documents, document_used = _trim_items(
+            documents, document_budget, newest_first=False, keep_top=True
+        )
+        remaining -= document_used
 
     summary_budget = min(int(available * 0.35), max(0, remaining))
-    chosen_summaries, summary_used = _trim_items(summaries, summary_budget, newest_first=False)
+    chosen_summaries, summary_used = _trim_items(
+        other_summaries, summary_budget, newest_first=False, keep_top=True
+    )
     remaining -= summary_used
 
     chosen_exact, exact_used = _trim_items(exact, max(0, remaining), newest_first=True)
@@ -222,29 +273,41 @@ def assemble(
     trims: list[str] = []
     if len(chosen_history) < len(history):
         trims.append("history")
-    if len(chosen_summaries) < len(summaries):
+    if len(chosen_documents) < len(documents):
+        trims.append("document")
+    if len(chosen_summaries) < len(other_summaries):
         trims.append("summary")
     if len(chosen_exact) < len(exact):
         trims.append("exact")
+    chosen_memory = chosen_documents + chosen_summaries + chosen_exact
     for _ in range(24):
-        rendered = _render_system(settings, chosen_exact + chosen_summaries, chosen_history, mode)
+        rendered = _render_system(settings, chosen_memory, chosen_history, mode)
         total = estimate_tokens(rendered) + input_tokens + tool_tokens
         if total <= settings.context_tokens - output_tokens:
             break
         if chosen_exact:
             chosen_exact.pop()
+            chosen_memory = chosen_documents + chosen_summaries + chosen_exact
             trims.append("exact")
         elif chosen_summaries:
             chosen_summaries.sort(key=lambda i: i.score)
             chosen_summaries.pop(0)
+            chosen_memory = chosen_documents + chosen_summaries + chosen_exact
             trims.append("summary")
+        elif chosen_documents:
+            # Truncate the document note as a last resort instead of dropping it.
+            document = chosen_documents[0]
+            shorter = truncate_tokens(document.body, max(1, document.tokens // 2))
+            chosen_documents = [_clone_item(document, shorter)]
+            chosen_memory = chosen_documents + chosen_summaries + chosen_exact
+            trims.append("document")
         elif chosen_history:
             chosen_history.pop(0)
             trims.append("history")
         else:
             raise InputTooLarge(input_tokens + tool_tokens, available)
 
-    rendered = _render_system(settings, chosen_exact + chosen_summaries, chosen_history, mode)
+    rendered = _render_system(settings, chosen_memory, chosen_history, mode)
 
     messages: list[dict] = [{"role": "system", "content": rendered}]
     messages.append({"role": "user", "content": user_text})
@@ -259,13 +322,15 @@ def assemble(
         "input_tokens": input_tokens,
         "tool_tokens": tool_tokens,
         "history_tokens": history_used,
+        "document_tokens": document_used,
         "summary_tokens": summary_used,
         "exact_tokens": exact_used,
         "system_tokens": estimate_tokens(rendered),
         "history_count": len(chosen_history),
+        "document_ids": [i.id for i in chosen_documents],
         "summary_ids": [i.id for i in chosen_summaries],
         "exact_ids": [i.id for i in chosen_exact],
         "trims": trims,
-        "items": [i.to_dict() for i in chosen_exact + chosen_summaries],
+        "items": [i.to_dict() for i in chosen_memory],
     }
     return messages, plan

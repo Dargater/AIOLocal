@@ -54,3 +54,31 @@ def test_reembed_reports_server_failures_without_raising(tmp_path: Path, monkeyp
     # Hash vectors remain available for retrieval.
     rows = store.get_embeddings(db, "message", "hash")
     assert rows
+
+def test_reembed_indexes_summaries_even_when_messages_fail(tmp_path: Path, monkeypatch):
+    import numpy as np
+
+    db = make_db(tmp_path)
+    settings = Settings(embedding_backend="ovms", embedding_model="tiny-embed")
+    store.ensure_conversation(db, "conv")
+    store.archive_message(db, conversation_id="conv", role="user", content="remember this")
+    sid = store.insert_summary(db, title="Durable summary", body="important fact")
+
+    def fake_batch(settings, texts, **kwargs):
+        if any("remember this" in t for t in texts):
+            return [None] * len(texts), "HTTP 500: bad batch"
+        return [np.ones(4, dtype=np.float32)] * len(texts), ""
+
+    monkeypatch.setattr(semantic, "embed_batch", fake_batch)
+    monkeypatch.setattr(semantic, "embed_text", lambda *args, **kwargs: None)
+    result = semantic.reembed_all(db, settings)
+
+    assert result["summaries"] == 1
+    assert result["messages"] == 0
+    assert result["error"]
+    rows = store.get_embeddings(db, "summary", "tiny-embed")
+    assert [r[0] for r in rows] == [sid]
+
+def test_read_timeout_does_not_abort_reembed():
+    assert semantic._server_unreachable("ReadTimeout: timed out") is False
+    assert semantic._server_unreachable("ConnectError: connection refused") is True

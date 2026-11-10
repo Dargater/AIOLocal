@@ -335,3 +335,39 @@ def test_setup_view_and_embed_controls_are_present(client):
     assert 'id="code-frame"' in page
     assert "/api/v1/code/embed" not in page  # endpoints live in JS, not markup
     assert 'id="log-view"' in page
+
+def test_delete_conversation_and_summary(env):
+    db = env["app"].state.ctx.db
+    cid = "conv-delete-api"
+    store.ensure_conversation(db, cid)
+    mid, _ = store.archive_message(db, conversation_id=cid, role="user", content="delete me")
+    sid = store.insert_summary(db, title="Delete me", body="temporary", message_ids=[mid])
+
+    response = env["client"].delete(f"/api/v1/conversations/{cid}", headers=hdr(env))
+    assert response.status_code == 200
+    assert store.conversation_messages(db, cid) == []
+    assert store.get_summary(db, sid) is not None
+
+    response = env["client"].delete(f"/api/v1/memory/summaries/{sid}", headers=hdr(env))
+    assert response.status_code == 200
+    assert store.get_summary(db, sid) is None
+
+    assert env["client"].delete("/api/v1/memory/summaries/missing", headers=hdr(env)).status_code == 404
+
+
+def test_delete_gallery_image_removes_file(env):
+    db = env["app"].state.ctx.db
+    image_dir = env["paths"].image_dir
+    image_dir.mkdir(parents=True, exist_ok=True)
+    path = image_dir / "delete-me.png"
+    path.write_bytes(b"png")
+    with db.write() as c:
+        c.execute(
+            """INSERT INTO images(id, prompt, path, created_at) VALUES(?,?,?,?)""",
+            ("img-delete", "test", "delete-me.png", 1),
+        )
+
+    response = env["client"].delete("/api/v1/images/img-delete", headers=hdr(env))
+    assert response.status_code == 200
+    assert not path.exists()
+    assert env["client"].get("/api/v1/images/img-delete/file", headers=hdr(env)).status_code == 404

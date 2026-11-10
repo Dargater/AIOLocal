@@ -68,6 +68,54 @@ def find_conversation_by_external(db: Database, source: str, external_id: str) -
     return row["id"] if row else None
 
 
+def delete_conversation(db: Database, conversation_id: str) -> bool:
+    """Delete a chat and its messages, leaving summary memory untouched."""
+    with db.write() as c:
+        exists = c.execute(
+            "SELECT 1 FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        if not exists:
+            return False
+        c.execute(
+            "DELETE FROM messages_fts WHERE message_id IN "
+            "(SELECT id FROM messages WHERE conversation_id=?)",
+            (conversation_id,),
+        )
+        c.execute(
+            "DELETE FROM embeddings WHERE owner_type='message' AND owner_id IN "
+            "(SELECT id FROM messages WHERE conversation_id=?)",
+            (conversation_id,),
+        )
+        c.execute(
+            "DELETE FROM summary_messages WHERE message_id IN "
+            "(SELECT id FROM messages WHERE conversation_id=?)",
+            (conversation_id,),
+        )
+        c.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
+        c.execute("DELETE FROM retrieval_log WHERE conversation_id=?", (conversation_id,))
+        c.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+    return True
+
+
+def delete_summary(db: Database, summary_id: str) -> bool:
+    """Delete one summary and all of its indexes/links."""
+    with db.write() as c:
+        exists = c.execute("SELECT 1 FROM summaries WHERE id=?", (summary_id,)).fetchone()
+        if not exists:
+            return False
+        c.execute("DELETE FROM summaries_fts WHERE summary_id=?", (summary_id,))
+        c.execute(
+            "DELETE FROM embeddings WHERE owner_type='summary' AND owner_id=?",
+            (summary_id,),
+        )
+        c.execute("DELETE FROM summary_messages WHERE summary_id=?", (summary_id,))
+        c.execute(
+            "DELETE FROM summary_edges WHERE src=? OR dst=?", (summary_id, summary_id)
+        )
+        c.execute("DELETE FROM summaries WHERE id=?", (summary_id,))
+    return True
+
+
 def conversation_messages(db: Database, conversation_id: str, limit: int = 500) -> list[dict]:
     with db.read() as c:
         rows = c.execute(

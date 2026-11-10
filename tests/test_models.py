@@ -107,3 +107,12 @@ def test_ovms_executable_auto_detection(tmp_path: Path, monkeypatch):
     exe.write_bytes(b"stub")
     monkeypatch.setattr(manager, "_ovms_detected", lambda: [str(exe)])
     assert manager._ovms_executable() == exe
+
+def test_lfm_defaults_to_cpu_with_npu_fallback():
+    from aiolocal.models import catalog_entry
+
+    entry = catalog_entry("lfm2.5-1.2b")
+    assert entry is not None
+    assert entry["default_device"] == "CPU"
+    assert entry["devices"][0] == "CPU"
+    assert "CPU" in entry["fallback_devices"]

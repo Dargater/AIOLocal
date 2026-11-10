@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from aiolocal.config import Paths, Settings
 from aiolocal.db import Database
 from aiolocal.memory import store
@@ -182,3 +184,39 @@ def test_messages_exclude_injected_from_history(tmp_path: Path):
     store.archive_message(db, conversation_id=cid, role="system", content="junk", injected=True)
     rows = store.recent_messages(db, cid, limit=10)
     assert [r["content"] for r in rows] == ["real question"]
+
+def test_delete_conversation_removes_messages_but_keeps_summaries(tmp_path: Path):
+    db, _ = make_db(tmp_path)
+    cid = "conv-delete"
+    store.ensure_conversation(db, cid)
+    mid, _ = store.archive_message(db, conversation_id=cid, role="user", content="keep the summary")
+    sid = store.insert_summary(db, title="A summary", body="durable fact", message_ids=[mid])
+    store.put_embedding(db, "message", mid, "hash", np.ones(256, dtype=np.float32))
+    store.put_embedding(db, "summary", sid, "hash", np.ones(256, dtype=np.float32))
+
+    assert store.delete_conversation(db, cid) is True
+    assert store.conversation_messages(db, cid) == []
+    assert store.get_summary(db, sid) is not None
+    assert store.summary_message_ids(db, sid) == []
+    assert store.get_embeddings(db, "message", "hash") == []
+    assert store.get_embeddings(db, "summary", "hash")
+    assert store.delete_conversation(db, cid) is False
+
+
+def test_delete_summary_removes_indexes_and_links(tmp_path: Path):
+    db, _ = make_db(tmp_path)
+    cid = "conv-summary-delete"
+    store.ensure_conversation(db, cid)
+    mid, _ = store.archive_message(db, conversation_id=cid, role="user", content="hello")
+    sid = store.insert_summary(db, title="Delete me", body="temporary", message_ids=[mid])
+    other = store.insert_summary(db, title="Keep me", body="durable", message_ids=[mid])
+    store.insert_summary_edge(db, sid, other, "follows")
+    store.put_embedding(db, "summary", sid, "hash", np.ones(256, dtype=np.float32))
+
+    assert store.delete_summary(db, sid) is True
+    assert store.get_summary(db, sid) is None
+    assert store.get_summary(db, other) is not None
+    assert store.get_embeddings(db, "summary", "hash", limit=10)[0][0] == other
+    assert store.delete_summary(db, sid) is False
+
+

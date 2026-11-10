@@ -29,6 +29,7 @@ greeting.json
 *.docx
 *.xlsx
 *.pptx
+SWE-Next-SFT-Trajectories/
 
 # Progress reports
 REPORT*.txt

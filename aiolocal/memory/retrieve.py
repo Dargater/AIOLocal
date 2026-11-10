@@ -56,10 +56,12 @@ class MemoryItem:
     created_at: int = 0
     salience: float = 0.5
     tokens: int = 0
+    summary_kind: str = ""  # summaries only: episodic/document/...
 
     def to_dict(self) -> dict:
         return {
             "kind": self.kind,
+            "summary_kind": self.summary_kind,
             "id": self.id,
             "title": self.title,
             "body": self.body,
@@ -372,6 +374,7 @@ def retrieve(
                 created_at=int(row.get("created_at") or 0),
                 salience=salience,
                 tokens=estimate_tokens(body) + estimate_tokens(row.get("title") or ""),
+                summary_kind=str(row.get("kind") or ""),
             )
         )
     ordered = ordered[:MAX_SUMMARIES]

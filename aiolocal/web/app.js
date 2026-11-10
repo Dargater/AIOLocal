@@ -425,6 +425,22 @@
     }
   }
 
+  async function deleteConversation() {
+    if (!state.conversationId) { toast("There is no chat to delete.", true); return; }
+    if (!confirm("Delete this chat and all of its messages? Summary memory is kept.")) return;
+    try {
+      await api(`/conversations/${encodeURIComponent(state.conversationId)}`, { method: "DELETE" });
+      state.conversationId = null;
+      await refreshConversations();
+      clearMessages();
+      clearChatImage();
+      showEmptyChat();
+      toast("Chat deleted.");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
   function currentModelSupportsVision() {
     const models = (state.models && state.models.models) || [];
     const select = $("#chat-model");
@@ -794,6 +810,7 @@
       gallery.innerHTML = state.gallery.map((img) => `
         <div class="gallery-item ${state.selectedImage === img.id ? "selected" : ""}" data-image="${escapeAttr(img.id)}">
           <img src="${escapeAttr(img.url)}?token=${encodeURIComponent(TOKEN)}" alt="${escapeAttr(img.prompt || "generated image")}" loading="lazy">
+          <button class="gallery-del" type="button" data-delete-image="${escapeAttr(img.id)}" title="Delete image">×</button>
           <div class="gallery-cap">${escapeHtml(img.prompt || "untitled")}</div>
         </div>`).join("");
     } catch (err) {
@@ -810,6 +827,24 @@
       box.innerHTML = `<img src="${escapeAttr(item.url)}?token=${encodeURIComponent(TOKEN)}" alt="selected image">`;
     }
     $$(".gallery-item").forEach((el) => el.classList.toggle("selected", el.dataset.image === id));
+  }
+
+  async function deleteGalleryImage(id) {
+    if (!id) return;
+    if (!confirm("Delete this image from the gallery?")) return;
+    try {
+      await api(`/images/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (state.selectedImage === id) {
+        state.selectedImage = null;
+        const box = $("#img-selected");
+        box.classList.add("empty");
+        box.textContent = "No image selected";
+      }
+      await refreshGallery();
+      toast("Image deleted.");
+    } catch (err) {
+      toast(err.message, true);
+    }
   }
 
   async function generateImage() {
@@ -926,10 +961,25 @@
     }
     box.innerHTML = rows.map((s) => `
       <div class="summary-item" data-summary="${escapeAttr(s.id)}">
-        <div class="summary-title">${escapeHtml(s.title)}</div>
-        <div class="summary-sub">${escapeHtml(s.topic_slug || "unsorted")} · salience ${Number(s.salience || 0).toFixed(2)} · ${s.message_count || 0} messages</div>
+        <div class="summary-head">
+          <div class="summary-title">${escapeHtml(s.title)}</div>
+          <button class="btn ghost small danger" type="button" data-delete-summary="${escapeAttr(s.id)}" title="Delete this memory entry">Delete</button>
+        </div>
+        <div class="summary-sub">${escapeHtml(s.topic_slug || "unsorted")} · ${escapeHtml(s.kind || "episodic")} · salience ${Number(s.salience || 0).toFixed(2)} · ${s.message_count || 0} messages</div>
         <div class="summary-body">${escapeHtml(String(s.body || "").slice(0, 240))}${String(s.body || "").length > 240 ? "…" : ""}</div>
       </div>`).join("");
+  }
+
+  async function deleteSummary(id) {
+    if (!id) return;
+    if (!confirm("Delete this memory entry? This cannot be undone.")) return;
+    try {
+      await api(`/memory/summaries/${encodeURIComponent(id)}`, { method: "DELETE" });
+      toast("Memory entry deleted.");
+      await refreshMemory();
+    } catch (err) {
+      toast(err.message, true);
+    }
   }
 
   function renderJobs(rows) {
@@ -1185,10 +1235,14 @@
     const device = select ? select.value : "GPU";
     try {
       const result = await api(`/models/${encodeURIComponent(id)}/load`, { method: "POST", body: { device } });
-      if (result.reload && !result.reload.ok) {
+      if (result.fallback) {
+        toast(result.fallback.reason, true);
+      } else if (result.message) {
+        toast(result.message, result.verified === false);
+      } else if (result.reload && !result.reload.ok) {
         toast(`Saved, but OVMS did not reload: ${result.reload.message}`, true);
       } else {
-        toast(`${id} loaded on ${device}.`);
+        toast(`${id} loaded on ${result.device || device}.`);
       }
       await refreshModels();
       refreshState();
@@ -2158,6 +2212,7 @@
       loadConversation(event.target.value || null);
     });
     $("#new-chat").addEventListener("click", newConversation);
+    $("#delete-chat").addEventListener("click", deleteConversation);
 
     $("#composer").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -2200,6 +2255,12 @@
     $("#img-generate").addEventListener("click", generateImage);
     $("#img-edit").addEventListener("click", editImage);
     $("#gallery").addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-delete-image]");
+      if (remove) {
+        event.stopPropagation();
+        deleteGalleryImage(remove.dataset.deleteImage);
+        return;
+      }
       const item = event.target.closest("[data-image]");
       if (item) selectImage(item.dataset.image);
     });
@@ -2216,6 +2277,12 @@
       } catch (err) { toast(err.message, true); }
     });
     $("#summary-list").addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-delete-summary]");
+      if (remove) {
+        event.stopPropagation();
+        deleteSummary(remove.dataset.deleteSummary);
+        return;
+      }
       const item = event.target.closest("[data-summary]");
       if (item) openSummary(item.dataset.summary);
     });

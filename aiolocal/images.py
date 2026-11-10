@@ -299,6 +299,24 @@ async def list_images(request: Request, limit: int = 60, offset: int = 0):
     )
 
 
+@router.delete("/api/v1/images/{image_id}")
+async def delete_image(image_id: str, request: Request):
+    ctx: AppContext = request.app.state.ctx
+    if not image_id or len(image_id) > 64:
+        return _error(404, "image not found", "not_found")
+    with ctx.db.write() as c:
+        row = c.execute("SELECT path FROM images WHERE id=?", (image_id,)).fetchone()
+        if not row:
+            return _error(404, "image not found", "not_found")
+        c.execute("DELETE FROM images WHERE id=?", (image_id,))
+    try:
+        path = safe_join(ctx.paths.image_dir, str(row["path"]))
+        path.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+    return {"ok": True, "deleted": image_id}
+
+
 @router.get("/api/v1/images/{image_id}/file")
 async def image_file(image_id: str, request: Request):
     ctx: AppContext = request.app.state.ctx

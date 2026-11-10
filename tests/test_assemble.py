@@ -61,6 +61,57 @@ def test_memory_hint_can_be_disabled():
     assert "nothing relevant was found" not in messages[0]["content"]
 
 
+def test_document_summary_is_guaranteed_and_not_crowded_out():
+    settings = Settings(context_tokens=8192, max_output_tokens=1024)
+    document_body = "vector question " + ("detail " * 3200)
+    document = MemoryItem(
+        kind="summary",
+        id="doc1",
+        title="Document: Vectors",
+        body=document_body,
+        score=0.9,
+        created_at=5000,
+        tokens=estimate_tokens(document_body),
+        summary_kind="document",
+    )
+    others = [item("summary", i, chars=500) for i in range(10)]
+    exact = [item("exact", 100 + i, chars=1800) for i in range(4)]
+    messages, plan = assemble(
+        settings,
+        user_text="solve the vector questions from the PDF",
+        history=[{"role": "assistant", "content": "earlier answer"}],
+        items=exact + [document] + others,
+    )
+    system = messages[0]["content"]
+    assert "Document: Vectors" in system
+    assert "detail detail detail" in system
+    assert "DOCUMENT MEMORY" in system
+    assert document.id in plan["document_ids"]
+    assert plan["document_tokens"] > 1000
+    assert "document" not in plan["trims"]
+    assert len(system) > len(document_body)
+
+
+def test_oversized_document_is_truncated_not_dropped():
+    settings = Settings(context_tokens=4096, max_output_tokens=512)
+    huge_body = "very long document " * 9000
+    document = MemoryItem(
+        kind="summary",
+        id="doc2",
+        title="Document: Huge",
+        body=huge_body,
+        score=1.0,
+        created_at=9000,
+        tokens=estimate_tokens(huge_body),
+        summary_kind="document",
+    )
+    messages, plan = assemble(settings, user_text="summarise the document", items=[document])
+    assert "Document: Huge" in messages[0]["content"]
+    assert "very long document" in messages[0]["content"]
+    assert document.id in plan["document_ids"]
+    assert len(messages[0]["content"]) < len(huge_body)
+
+
 def test_medical_mode_has_disclaimer():
     settings = Settings(context_tokens=4096, max_output_tokens=256)
     messages, plan = assemble(settings, user_text="my chest hurts", mode="medical")

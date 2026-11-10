@@ -765,7 +765,13 @@ def normalise_slug(value: str) -> str:
 
 
 def chunk_text(text: str, target_tokens: int = 360, overlap_tokens: int = 60) -> list[dict]:
-    """Split text into overlapping chunks, keeping the nearest Markdown heading."""
+    """Split text into overlapping chunks, keeping the nearest Markdown heading.
+
+    Blocks are normally separated by blank lines, but JSONL datasets, minified
+    JSON and long transcripts often have no blank lines at all. Those must still
+    be split by size; a single multi-megabyte chunk would be useless for search
+    and would flood the chat context.
+    """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
     text = text[:MAX_TEXT_CHARS]
@@ -774,6 +780,32 @@ def chunk_text(text: str, target_tokens: int = 360, overlap_tokens: int = 60) ->
     heading = ""
     current: list[str] = []
     current_tokens = 0
+    max_chars = max(400, target_tokens * 4)
+
+    def split_block(block: str) -> list[str]:
+        """Break an oversized block on line boundaries, hard-slicing huge lines."""
+        if len(block) <= max_chars:
+            return [block]
+        pieces: list[str] = []
+        buffer: list[str] = []
+        size = 0
+        for line in block.splitlines() or [block]:
+            while len(line) > max_chars:
+                if buffer:
+                    pieces.append("\n".join(buffer))
+                    buffer = []
+                    size = 0
+                pieces.append(line[:max_chars])
+                line = line[max_chars:]
+            if buffer and size + len(line) + 1 > max_chars:
+                pieces.append("\n".join(buffer))
+                buffer = []
+                size = 0
+            buffer.append(line)
+            size += len(line) + 1
+        if buffer:
+            pieces.append("\n".join(buffer))
+        return pieces
 
     def flush() -> None:
         nonlocal current, current_tokens
@@ -789,20 +821,25 @@ def chunk_text(text: str, target_tokens: int = 360, overlap_tokens: int = 60) ->
             current_tokens = 0
 
     override_overlap = max(0, int(overlap_tokens))
+    stop = False
     for block in blocks:
+        if stop:
+            break
         block = block.strip()
         if not block:
             continue
         match = re.search(r"^#{1,6}\s+(.+)$", block, re.MULTILINE)
         if match:
             heading = match.group(1).strip()
-        tokens = estimate_tokens(block)
-        if current and current_tokens + tokens > target_tokens:
-            flush()
-            if len(chunks) >= MAX_CHUNKS_PER_DOC:
-                break
-        current.append(block)
-        current_tokens += tokens
+        for piece in split_block(block):
+            tokens = estimate_tokens(piece)
+            if current and current_tokens + tokens > target_tokens:
+                flush()
+                if len(chunks) >= MAX_CHUNKS_PER_DOC:
+                    stop = True
+                    break
+            current.append(piece)
+            current_tokens += tokens
     if len(chunks) < MAX_CHUNKS_PER_DOC:
         body = "\n\n".join(b for b in current if b.strip()).strip()
         if body and (not chunks or chunks[-1]["text"] != body):

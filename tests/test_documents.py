@@ -131,6 +131,23 @@ def test_start_requires_a_vision_model(tmp_path: Path, monkeypatch):
     assert not pdf.exists()
 
 
+def test_failure_before_any_page_leaves_no_stub_summary(tmp_path: Path):
+    analyzer, db, _ = make_analyzer(tmp_path)
+    pdf = make_pdf(tmp_path / "broken.pdf", pages=2)
+
+    def boom(path, first, last, dpi):
+        raise DocumentError("render failed")
+
+    analyzer._render_pages = boom
+    before = len(store.list_summaries(db, limit=200))
+    job = analyzer.start(pdf, "broken.pdf")
+    current = wait_for(analyzer, job["id"])
+
+    assert current["state"] == "error"
+    assert current["summary_id"] == ""
+    assert len(store.list_summaries(db, limit=200)) == before
+
+
 def test_only_pdf_files_are_accepted(tmp_path: Path):
     analyzer, _, _ = make_analyzer(tmp_path)
     text = tmp_path / "notes.txt"

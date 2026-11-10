@@ -271,7 +271,6 @@ class DocumentAnalyzer:
                 range(1, job.pages_total + 1, settings.document_pages_per_batch), start=1
             ):
                 if job.cancel.is_set():
-                    job.state = "cancelled"
                     break
                 end = min(job.pages_total, start + settings.document_pages_per_batch - 1)
                 images = self._render_pages(job.path, start, end, settings.document_dpi)
@@ -287,7 +286,19 @@ class DocumentAnalyzer:
                 self._append_notes(job, start, end, text, settings.embed_dim)
                 self._emit(job)
 
-            if job.state != "cancelled":
+            if job.cancel.is_set():
+                # Cancelled before any page was analysed: remove the empty stub.
+                if not notes and job.summary_id:
+                    try:
+                        store.delete_summary(self.db, job.summary_id)
+                    except Exception:
+                        pass
+                    job.summary_id = ""
+                # Publish the terminal state only after the cleanup above.
+                job.state = "cancelled"
+                job.updated_at = now_ms()
+                self._emit(job)
+            else:
                 final = self._consolidate(settings, job, notes)
                 job.final = final
                 job.state = "done"
@@ -305,9 +316,7 @@ class DocumentAnalyzer:
                 self._emit(job)
         except Exception as exc:
             job.error = f"{type(exc).__name__}: {exc}"[:1000]
-            job.state = "error"
-            job.updated_at = now_ms()
-            if job.summary_id:
+            if job.summary_id and notes:
                 try:
                     body = self._compose_body(
                         job,
@@ -317,8 +326,27 @@ class DocumentAnalyzer:
                         error=job.error,
                     )
                     store.update_summary_body(self.db, job.summary_id, body, embed_dim=settings.embed_dim)
+                    semantic.index_summary(
+                        self.db,
+                        settings,
+                        job.summary_id,
+                        f"Document: {job.title}",
+                        body,
+                    )
                 except Exception:
                     pass
+            elif job.summary_id:
+                # Nothing was analysed: do not leave an empty "Analysis error"
+                # memory behind. The job itself keeps the error for the UI.
+                try:
+                    store.delete_summary(self.db, job.summary_id)
+                except Exception:
+                    pass
+                job.summary_id = ""
+            # Publish the terminal state only after the cleanup above, so a reader
+            # never observes "error" while the stub summary still exists.
+            job.state = "error"
+            job.updated_at = now_ms()
             self._emit(job)
         finally:
             with self._lock:
