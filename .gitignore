@@ -13,13 +13,23 @@ Release/
 
 # Local runtime data (never commit)
 data/
+.data/
 logs/
 artifacts/
 models/
 *.db
 *.db-wal
 *.db-shm
+*.log
 config.local.json
+config/
+secrets.bin
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
 
 # User data and test fixtures (large / private)
 dataset.jsonl
